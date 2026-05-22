@@ -28,11 +28,6 @@ def make_device(address, name="Dev", rssi=-50):
     return dev
 
 
-# ---------------------------------------------------------------------------
-# tools: hex_to_bytes / normalize_address / address_to_string
-# ---------------------------------------------------------------------------
-
-
 class TestHexToBytes:
     def test_plain_hex(self):
         assert hex_to_bytes("deadbeef") == [0xDE, 0xAD, 0xBE, 0xEF]
@@ -70,11 +65,6 @@ class TestAddressToString:
     def test_truncate(self):
         dev = make_device([1, 2, 3, 4, 5, 6, 255])
         assert address_to_string(dev) == "010203040506"
-
-
-# ---------------------------------------------------------------------------
-# FilterSet
-# ---------------------------------------------------------------------------
 
 
 class TestFilterSet:
@@ -126,11 +116,6 @@ class TestFilterSet:
         assert not fs.match(pkt)
 
 
-# ---------------------------------------------------------------------------
-# SnifferClient mocking
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture()
 def mock_client(monkeypatch):
     instance = MagicMock()
@@ -138,11 +123,6 @@ def mock_client(monkeypatch):
     instance.stop.return_value = None
     monkeypatch.setattr(cli_module, "SnifferClient", lambda capture_file: instance)
     return instance
-
-
-# ---------------------------------------------------------------------------
-# CLI: list
-# ---------------------------------------------------------------------------
 
 
 class TestList:
@@ -156,11 +136,6 @@ class TestList:
     def test_list_none(self, monkeypatch):
         monkeypatch.setattr(cli_module.UART, "find_sniffer", lambda: [])
         assert run_main("list") != 0
-
-
-# ---------------------------------------------------------------------------
-# CLI: scan
-# ---------------------------------------------------------------------------
 
 
 class TestScan:
@@ -188,11 +163,6 @@ class TestScan:
         mock_client.scan.return_value = []
         assert run_main("scan", "--json") == 0
         assert json.loads(capsys.readouterr().out) == []
-
-
-# ---------------------------------------------------------------------------
-# CLI: sniff
-# ---------------------------------------------------------------------------
 
 
 class TestSniff:

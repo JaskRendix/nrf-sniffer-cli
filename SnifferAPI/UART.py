@@ -34,10 +34,13 @@
 # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 # OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from __future__ import annotations
+
 import collections
 import logging
 import os
 from threading import Event, Thread
+from typing import Deque
 
 import serial
 import serial.tools.list_ports as list_ports
@@ -47,80 +50,100 @@ from . import Exceptions, Filelock, Packet
 if os.name == "posix":
     import termios
 
-SNIFFER_OLD_DEFAULT_BAUDRATE = 460800
-# Baudrates that should be tried (add more if required)
-SNIFFER_BAUDRATES = [1000000, 460800]
+
+SNIFFER_OLD_DEFAULT_BAUDRATE: int = 460800
+SNIFFER_BAUDRATES: list[int] = [1_000_000, 460_800]
 
 
-def find_sniffer(write_data=False):
+def find_sniffer(write_data: bool = False) -> list[str]:
+    """Scan all serial ports and return those that respond like a Nordic sniffer."""
     open_ports = list_ports.comports()
+    sniffers: list[str] = []
 
-    sniffers = []
-    for port in [x.device for x in open_ports]:
+    for port in (x.device for x in open_ports):
         for rate in SNIFFER_BAUDRATES:
-            reader = None
-            l_errors = [serial.SerialException, ValueError, Exceptions.LockedException]
+            reader: Packet.PacketReader | None = None
+
+            error_types = [
+                serial.SerialException,
+                ValueError,
+                Exceptions.LockedException,
+            ]
             if os.name == "posix":
-                l_errors.append(termios.error)
+                error_types.append(termios.error)
+
             try:
                 reader = Packet.PacketReader(portnum=port, baudrate=rate)
                 try:
                     if write_data:
                         reader.sendPingReq()
-                        _ = reader.decodeFromSLIP(0.1, complete_timeout=0.1)
+                        reader.decodeFromSLIP(0.1, complete_timeout=0.1)
                     else:
-                        _ = reader.decodeFromSLIP(0.3, complete_timeout=0.3)
+                        reader.decodeFromSLIP(0.3, complete_timeout=0.3)
 
-                    # FIXME: Should add the baud rate here, but that will be a breaking change
                     sniffers.append(port)
                     break
                 except (Exceptions.SnifferTimeout, Exceptions.UARTPacketError):
                     pass
-            except tuple(l_errors):
+
+            except tuple(error_types):
                 continue
+
             finally:
                 if reader is not None:
                     reader.doExit()
+
     return sniffers
 
 
-def find_sniffer_baudrates(port, write_data=False):
+def find_sniffer_baudrates(
+    port: str, write_data: bool = False
+) -> dict[str, list[int]] | None:
+    """Return the working baudrate for a sniffer port, or None if none match."""
     for rate in SNIFFER_BAUDRATES:
-        reader = None
+        reader: Packet.PacketReader | None = None
         try:
             reader = Packet.PacketReader(portnum=port, baudrate=rate)
             try:
                 if write_data:
                     reader.sendPingReq()
-                    _ = reader.decodeFromSLIP(0.1, complete_timeout=0.1)
+                    reader.decodeFromSLIP(0.1, complete_timeout=0.1)
                 else:
-                    _ = reader.decodeFromSLIP(0.3, complete_timeout=0.3)
+                    reader.decodeFromSLIP(0.3, complete_timeout=0.3)
 
-                # TODO: possibly include additional rates based on protocol version
                 return {"default": rate, "other": []}
+
             except (Exceptions.SnifferTimeout, Exceptions.UARTPacketError):
                 pass
+
         finally:
             if reader is not None:
                 reader.doExit()
+
     return None
 
 
 class Uart:
-    def __init__(self, portnum=None, baudrate=None):
-        self.ser = None
+    """UART wrapper with background read thread and safe shutdown."""
+
+    def __init__(self, portnum: str | None = None, baudrate: int | None = None):
+        self.ser: serial.Serial | None = None
+
         try:
             if baudrate is not None and baudrate not in SNIFFER_BAUDRATES:
-                raise Exception("Invalid baudrate: " + str(baudrate))
+                raise ValueError(f"Invalid baudrate: {baudrate}")
 
-            logging.info("Opening serial port {}".format(portnum))
+            logging.info(f"Opening serial port {portnum}")
 
             self.portnum = portnum
             if self.portnum:
                 Filelock.lock(portnum)
 
             self.ser = serial.Serial(
-                port=portnum, baudrate=9600, rtscts=True, exclusive=True
+                port=portnum,
+                baudrate=9600,
+                rtscts=True,
+                exclusive=True,
             )
             self.ser.baudrate = baudrate
 
@@ -130,86 +153,86 @@ class Uart:
                 self.ser = None
             raise
 
-        self.read_queue = collections.deque()
-        self.read_queue_has_data = Event()
+        self.read_queue: Deque[int] = collections.deque()
+        self.read_queue_has_data: Event = Event()
 
-        self.worker_thread = Thread(target=self._read_worker)
-        self.reading = True
-        self.worker_thread.daemon = True
+        self.reading: bool = True
+        self.worker_thread: Thread = Thread(target=self._read_worker, daemon=True)
         self.worker_thread.start()
 
-    def _read_worker(self):
+    def _read_worker(self) -> None:
+        assert self.ser is not None
         self.ser.reset_input_buffer()
+
         while self.reading:
             try:
-                # Read any data available, or wait for at least one byte
-                data_read = self.ser.read(self.ser.in_waiting or 1)
-                # logging.info('type: {}'.format(data_read.__class__))
-                self._read_queue_extend(data_read)
-            except serial.SerialException as e:
-                logging.info("Unable to read UART: %s" % e)
+                data = self.ser.read(self.ser.in_waiting or 1)
+                self._read_queue_extend(data)
+            except serial.SerialException as exc:
+                logging.info(f"Unable to read UART: {exc}")
                 self.reading = False
                 return
 
-    def close(self):
+    def close(self) -> None:
+        """Stop the worker thread and close the serial port."""
         if self.ser:
             logging.info("closing UART")
             self.reading = False
-            # Wake any threads waiting on the queue
             self.read_queue_has_data.set()
+
             if hasattr(self.ser, "cancel_read"):
                 self.ser.cancel_read()
-                self.worker_thread.join()
-                self.ser.close()
-            else:
-                self.ser.close()
-                self.worker_thread.join()
+
+            self.worker_thread.join()
+            self.ser.close()
             self.ser = None
 
-        if self.portnum:
+        if getattr(self, "portnum", None):
             Filelock.unlock(self.portnum)
 
-    def __del__(self):
+    def __del__(self) -> None:
         self.close()
 
-    def switchBaudRate(self, newBaudRate):
+    def switchBaudRate(self, newBaudRate: int) -> None:
+        assert self.ser is not None
         self.ser.baudrate = newBaudRate
 
-    def readByte(self, timeout=None):
-        r = self._read_queue_get(timeout)
-        return r
+    def readByte(self, timeout: float | None = None) -> int | None:
+        return self._read_queue_get(timeout)
 
-    def writeList(self, array):
+    def writeList(self, array: bytes | bytearray | list[int]) -> None:
+        assert self.ser is not None
         try:
             self.ser.write(array)
         except serial.SerialTimeoutException:
             logging.info("Got write timeout, ignoring error")
-
-        except serial.SerialException as e:
+        except serial.SerialException as exc:
             self.ser.close()
-            raise e
+            raise exc
 
-    def _read_queue_extend(self, data):
-        if len(data) > 0:
+    def _read_queue_extend(self, data: bytes) -> None:
+        if data:
             self.read_queue.extend(data)
             self.read_queue_has_data.set()
 
-    def _read_queue_get(self, timeout=None):
-        data = None
+    def _read_queue_get(self, timeout: float | None) -> int | None:
         if self.read_queue_has_data.wait(timeout):
             self.read_queue_has_data.clear()
             try:
-                data = self.read_queue.popleft()
+                value = self.read_queue.popleft()
             except IndexError:
-                # This will happen when the class is destroyed
                 return None
-            if len(self.read_queue) > 0:
+
+            if self.read_queue:
                 self.read_queue_has_data.set()
-        return data
+
+            return value
+
+        return None
 
 
 def list_serial_ports():
-    # Scan for available ports.
+    """Return available serial ports."""
     return list_ports.comports()
 
 
@@ -217,14 +240,14 @@ if __name__ == "__main__":
     import time
 
     t_start = time.time()
-    s = find_sniffer()
-    tn = time.time()
-    print(s)
-    print("find_sniffer took %f seconds" % (tn - t_start))
-    for p in s:
+    ports = find_sniffer()
+    t_mid = time.time()
+    print(ports)
+    print(f"find_sniffer took {t_mid - t_start:.3f} seconds")
+
+    for p in ports:
         t = time.time()
         print(find_sniffer_baudrates(p))
-        tn = time.time()
-        print("find_sniffer_baudrate took %f seconds" % (tn - t))
-    tn = time.time()
-    print("total runtime %f" % (tn - t_start))
+        print(f"find_sniffer_baudrate took {time.time() - t:.3f} seconds")
+
+    print(f"total runtime {time.time() - t_start:.3f}")
