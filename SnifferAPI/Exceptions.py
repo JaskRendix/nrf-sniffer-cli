@@ -34,33 +34,48 @@
 # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 # OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from __future__ import annotations
+
 
 class SnifferTimeout(Exception):
+    """Raised when the sniffer times out waiting for data."""
+
     pass
 
 
 class UARTPacketError(Exception):
+    """Raised when a UART packet is malformed or invalid."""
+
     pass
 
 
 class LockedException(Exception):
-    def __init__(self, message):
-        self.message = message
+    """Raised when a resource (e.g. device/port) is locked."""
+
+    def __init__(self, message: str | None = None) -> None:
+        self.message: str | None = message
+        super().__init__(message)
 
 
 class InvalidPacketException(Exception):
+    """Raised when a received packet fails validation."""
+
     pass
 
 
 class InvalidAdvChannel(Exception):
+    """Raised when an invalid advertising channel is used."""
+
     pass
 
 
-# Internal Use
 class SnifferWatchDogTimeout(SnifferTimeout):
+    """Internal: raised when the sniffer watchdog times out."""
+
     pass
 
 
-# Internal Use
 class ExitCodeException(Exception):
+    """Internal: raised to signal an exit with a specific code."""
+
     pass

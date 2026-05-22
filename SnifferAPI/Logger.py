@@ -34,6 +34,7 @@
 # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 # OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from __future__ import annotations
 
 import logging
 import logging.handlers as logHandlers
@@ -62,138 +63,154 @@ else:
 
 DEFAULT_LOG_FILE_NAME = "log.txt"
 
-logFileName = None
-logHandler = None
-logHandlerArray = []
-logFlusher = None
+logFileName: str | None = None
+logHandler: logHandlers.RotatingFileHandler | None = None
+logHandlerArray: list[logging.Handler] = []
+logFlusher: "LogFlusher" | None = None
 
-myMaxBytes = 1000000
+myMaxBytes: int = 1_000_000
 
 
-def setLogFileName(log_file_path):
+def setLogFileName(log_file_path: str) -> None:
+    """Set the absolute path of the log file to use."""
     global logFileName
     logFileName = os.path.abspath(log_file_path)
 
 
-# Ensure that the directory we are writing the log file to exists.
-# Create our logfile, and write the timestamp in the first line.
-def initLogger():
+def initLogger() -> None:
+    """Initialize the global logger and start the flusher thread."""
     try:
-        global logFileName
+        global logFileName, logHandler, logFlusher, logHandlerArray
+
         if logFileName is None:
             logFileName = os.path.join(DEFAULT_LOG_FILE_DIR, DEFAULT_LOG_FILE_NAME)
 
-        # First, make sure that the directory exists
-        if not os.path.isdir(os.path.dirname(logFileName)):
-            os.makedirs(os.path.dirname(logFileName))
+        log_dir = os.path.dirname(logFileName)
+        if not os.path.isdir(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
 
-        # If the file does not exist, create it, and save the timestamp
         if not os.path.isfile(logFileName):
-            with open(logFileName, "w") as f:
-                f.write(str(time.time()) + str(os.linesep))
-
-        global logFlusher
-        global logHandlerArray
+            with open(logFileName, "w", encoding="utf-8") as f:
+                f.write(f"{time.time()}{os.linesep}")
 
         logHandler = MyRotatingFileHandler(
             logFileName, mode="a", maxBytes=myMaxBytes, backupCount=3
         )
         logFormatter = logging.Formatter(
-            "%(asctime)s %(levelname)s: %(message)s", datefmt="%d-%b-%Y %H:%M:%S (%z)"
+            "%(asctime)s %(levelname)s: %(message)s",
+            datefmt="%d-%b-%Y %H:%M:%S (%z)",
         )
         logHandler.setFormatter(logFormatter)
+
         logger = logging.getLogger()
         logger.addHandler(logHandler)
         logger.setLevel(logging.INFO)
+
         logFlusher = LogFlusher(logHandler)
         logHandlerArray.append(logHandler)
-    except:
+    except Exception:
         print("LOGGING FAILED")
         print(traceback.format_exc())
         raise
 
 
-def shutdownLogger():
+def shutdownLogger() -> None:
+    """Stop the flusher thread and shut down logging."""
+    global logFlusher
     if logFlusher is not None:
         logFlusher.stop()
+        logFlusher = None
     logging.shutdown()
 
 
-# Clear the log (typically after it has been sent on email)
-def clearLog():
+def clearLog() -> None:
+    """Clear the log by forcing a rollover."""
     try:
-        logHandler.doRollover()
-    except:
+        if logHandler is not None:
+            logHandler.doRollover()
+    except Exception:
         print("LOGGING FAILED")
         raise
 
 
-# Returns the timestamp residing on the first line of the logfile. Used for checking the time of creation
-def getTimestamp():
+def getTimestamp() -> str | None:
+    """Return the timestamp on the first line of the logfile."""
+    if logFileName is None:
+        return None
     try:
-        with open(logFileName, "r") as f:
+        with open(logFileName, "r", encoding="utf-8") as f:
             f.seek(0)
             return f.readline()
-    except:
+    except Exception:
         print("LOGGING FAILED")
+        return None
 
 
-def addTimestamp():
+def addTimestamp() -> None:
+    """Append a timestamp line to the logfile."""
+    if logFileName is None:
+        return
     try:
-        with open(logFileName, "a") as f:
-            f.write(str(time.time()) + os.linesep)
-    except:
+        with open(logFileName, "a", encoding="utf-8") as f:
+            f.write(f"{time.time()}{os.linesep}")
+    except Exception:
         print("LOGGING FAILED")
 
 
-# Returns the entire content of the logfile. Used when sending emails
-def readAll():
+def readAll() -> str:
+    """Return the entire content of the logfile."""
+    if logFileName is None:
+        return ""
     try:
-        text = ""
-        with open(logFileName, "r") as f:
-            text = f.read()
-        return text
-    except:
+        with open(logFileName, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
         print("LOGGING FAILED")
+        return ""
 
 
-def addLogHandler(logHandler):
+def addLogHandler(handler: logging.Handler) -> None:
+    """Add an extra logging handler and track it in the global list."""
     global logHandlerArray
     logger = logging.getLogger()
-    logger.addHandler(logHandler)
+    logger.addHandler(handler)
     logger.setLevel(logging.INFO)
-    logHandlerArray.append(logHandler)
+    logHandlerArray.append(handler)
 
 
-def removeLogHandler(logHandler):
+def removeLogHandler(handler: logging.Handler) -> None:
+    """Remove a logging handler previously added."""
     global logHandlerArray
     logger = logging.getLogger()
-    logger.removeHandler(logHandler)
-    logHandlerArray.remove(logHandler)
+    logger.removeHandler(handler)
+    if handler in logHandlerArray:
+        logHandlerArray.remove(handler)
 
 
 class MyRotatingFileHandler(logHandlers.RotatingFileHandler):
-    def doRollover(self):
+    """Custom rotating file handler that appends a timestamp after rollover."""
+
+    def doRollover(self) -> None:
         try:
-            logHandlers.RotatingFileHandler.doRollover(self)
+            super().doRollover()
             addTimestamp()
             self.maxBytes = myMaxBytes
-        except:
+        except Exception:
             # There have been permissions issues with the log files.
             self.maxBytes += int(myMaxBytes / 2)
 
 
 class LogFlusher(threading.Thread):
-    def __init__(self, logHandler):
-        threading.Thread.__init__(self)
+    """Background thread that periodically flushes the log handler."""
 
+    def __init__(self, logHandler: logging.Handler) -> None:
+        super().__init__()
         self.daemon = True
         self.handler = logHandler
         self.exit = threading.Event()
-
         self.start()
 
-    def run(self):
+    def run(self) -> None:
         while True:
             if self.exit.wait(10):
                 try:
@@ -203,16 +220,22 @@ class LogFlusher(threading.Thread):
                 break
             self.doFlush()
 
-    def doFlush(self):
+    def doFlush(self) -> None:
         self.handler.flush()
-        os.fsync(self.handler.stream.fileno())
+        stream = getattr(self.handler, "stream", None)
+        if stream is not None and hasattr(stream, "fileno"):
+            try:
+                os.fsync(stream.fileno())
+            except OSError:
+                # If fsync fails (e.g. closed file), ignore and continue.
+                pass
 
-    def stop(self):
+    def stop(self) -> None:
         self.exit.set()
 
 
 if __name__ == "__main__":
     initLogger()
     for i in range(50):
-        logging.info("test log no. " + str(i))
+        logging.info(f"test log no. {i}")
         print("test log no. ", i)

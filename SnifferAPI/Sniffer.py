@@ -34,198 +34,162 @@
 # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 # OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from __future__ import annotations
+
 import logging
-
-from . import UART, Logger
-from .Types import *
-
-try:
-    from .version import VERSION_STRING
-except:
-    VERSION_STRING = "Unknown Version"
-
-
-def initLog():
-    Logger.initLogger()
-
-    logging.info("--------------------------------------------------------")
-    logging.info("Software version: " + VERSION_STRING)
-
-
 import os
 import sys
 import threading
+from typing import Any
 
-from . import SnifferCollector
+from . import UART, Logger, SnifferCollector
+from .Types import *  # noqa: F401
+
+try:
+    from .version import VERSION_STRING
+except Exception:
+    VERSION_STRING = "Unknown Version"
+
+
+def initLog() -> None:
+    Logger.initLogger()
+    logging.info("--------------------------------------------------------")
+    logging.info(f"Software version: {VERSION_STRING}")
 
 
 class Sniffer(threading.Thread, SnifferCollector.SnifferCollector):
+    """Threaded wrapper around SnifferCollector providing the public API."""
 
-    # Sniffer constructor. portnum argument is optional. If not provided,
-    # the software will try to locate the firwmare automatically (may take time).
-    # NOTE: portnum is 0-indexed, while Windows names are 1-indexed
     def __init__(
-        self, portnum=None, baudrate=UART.SNIFFER_OLD_DEFAULT_BAUDRATE, **kwargs
-    ):
+        self,
+        portnum: str | None = None,
+        baudrate: int = UART.SNIFFER_OLD_DEFAULT_BAUDRATE,
+        **kwargs: Any,
+    ) -> None:
         initLog()
+
         threading.Thread.__init__(self)
         SnifferCollector.SnifferCollector.__init__(
             self, portnum, baudrate=baudrate, **kwargs
         )
-        self.daemon = True
 
+        self.daemon = True
+        self.goodExit: bool = True
+
+        # Notify when COM port is detected
         self.subscribe("COMPORT_FOUND", self.comPortFound)
 
-    # API STARTS HERE
-
-    # Get [number] number of packets since last fetch (-1 means all)
-    # Note that the packet buffer is limited to about 80000 packets.
-    # Returns: A list of Packet objects
-    def getPackets(self, number=-1):
+    def getPackets(self, number: int = -1) -> list[Any]:
+        """Return up to `number` packets since last fetch."""
         return self._getPackets(number)
 
-    # Get a list of devices which are advertising in range of the Sniffer.
-    # Returns: A DeviceList object.
     def getDevices(self):
+        """Return the DeviceList of discovered devices."""
         return self._devices
 
-    # Add a new device to the list of devices
-    def addDevice(self, device):
+    def addDevice(self, device) -> None:
+        """Manually add a device to the device list."""
         self._addDevice(device)
 
-    # Signal the Sniffer firmware to sniff a specific device.
-    # "device" argument is of type Device
-    # if "followOnlyAdvertisements" is True, the sniffer will not follow the device into a connection.
-    # Returns nothing
     def follow(
         self,
         device=None,
-        followOnlyAdvertisements=False,
-        followOnlyLegacy=False,
-        followCoded=False,
-    ):
+        followOnlyAdvertisements: bool = False,
+        followOnlyLegacy: bool = False,
+        followCoded: bool = False,
+    ) -> None:
+        """Follow a specific BLE device."""
         self._startFollowing(
             device, followOnlyAdvertisements, followOnlyLegacy, followCoded
         )
 
-    # Clear the list of devices
-    def clearDevices(self):
+    def clearDevices(self) -> None:
+        """Clear the device list."""
         self._clearDevices()
 
-    # Signal the Sniffer to scan for advertising devices by sending the REQ_SCAN_CONT UART packet.
-    # This will cause it to stop sniffing any device it is sniffing at the moment.
-    # Returns nothing.
-    def scan(self, findScanRsp=False, findAux=False, scanCoded=False):
+    def scan(
+        self, findScanRsp: bool = False, findAux: bool = False, scanCoded: bool = False
+    ) -> None:
+        """Start scanning for advertising devices."""
         self._startScanning(findScanRsp, findAux, scanCoded)
 
-    # Send a temporary key to the sniffer to use when decrypting encrypted communication.
-    # Returns nothing.
-    def sendTK(self, TK):
+    def sendTK(self, TK) -> None:
         self._packetReader.sendTK(TK)
 
-    # Send Diffie-Hellman private key to the sniffer to use when decrypting encrypted communication.
-    # Returns nothing.
-    def sendPrivateKey(self, pk):
+    def sendPrivateKey(self, pk) -> None:
         self._packetReader.sendPrivateKey(pk)
 
-    # Send Legacy Long Term Key (LTK) to the sniffer to use when decrypting encrypted communication.
-    # Returns nothing.
-    def sendLegacyLTK(self, ltk):
+    def sendLegacyLTK(self, ltk) -> None:
         self._packetReader.sendLegacyLTK(ltk)
 
-    # Send LE Secure Connections (SC) Long Term Key (LTK) to the sniffer to use when decrypting encrypted communication.
-    # Returns nothing.
-    def sendSCLTK(self, ltk):
+    def sendSCLTK(self, ltk) -> None:
         self._packetReader.sendSCLTK(ltk)
 
-    def sendIRK(self, irk):
+    def sendIRK(self, irk) -> None:
         self._packetReader.sendIRK(irk)
 
-    # Send a request for the sniffer version in the sniffer firmware.
-    def getFirmwareVersion(self):
+    def getFirmwareVersion(self) -> None:
+        """Request firmware version from the sniffer."""
         self._packetReader.sendVersionReq()
-        # Older versions of the firmware send the version in the PING response packet.
-        self._packetReader.sendPingReq()
+        self._packetReader.sendPingReq()  # older firmware responds here
 
-    def getTimestamp(self):
+    def getTimestamp(self) -> None:
         self._packetReader.sendTimestampReq()
 
-    # Set the preset COM port number. Only use this during startup. Set to None to search all ports.
-    # Returns nothing.
-    def setPortnum(self, portnum):
+    def setPortnum(self, portnum: str | None) -> None:
+        """Set COM port number before starting the sniffer."""
         self._portnum = portnum
         self._packetReader.portnum = portnum
 
-    # Set the order in which the sniffer cycles through adv channels when following a device.
-    # hopSequence must be a list of length 1, 2, or 3, and each item must be either 37, 38, or 39.
-    # The same channel cannot occur more than once in the list.
-    # Returns nothing.
-    def setAdvHopSequence(self, hopSequence):
+    def setAdvHopSequence(self, hopSequence) -> None:
         self._packetReader.sendHopSequence(hopSequence)
 
-    def setSupportedProtocolVersion(self, suportedProtocolVersion):
-        self._packetReader.setSupportedProtocolVersion(suportedProtocolVersion)
+    def setSupportedProtocolVersion(self, supportedProtocolVersion) -> None:
+        self._packetReader.setSupportedProtocolVersion(supportedProtocolVersion)
 
-    # Gracefully shut down the sniffer threads and connections.
-    # If join is True, join the sniffer thread until it quits.
-    # Returns nothing.
-    def doExit(self, join=False):
+    def doExit(self, join: bool = False) -> None:
+        """Gracefully shut down the sniffer."""
         self._doExit()
         if join:
             self.join()
 
-    # NOTE: Methods with decorator @property can be used as (read-only) properties
-    # Example: mMissedPackets = sniffer.missedPackets
-
-    # The number of missed packets over the UART, as determined by the packet counter in the header.
     @property
-    def missedPackets(self):
+    def missedPackets(self) -> int:
         return self._missedPackets
 
-    # The number of packets which were sniffed in the last BLE connection. From CONNECT_REQ until link loss/termination.
     @property
-    def packetsInLastConnection(self):
+    def packetsInLastConnection(self) -> int | None:
         return self._packetsInLastConnection
 
-    # The packet counter value of the last received connect request.
     @property
-    def connectEventPacketCounterValue(self):
+    def connectEventPacketCounterValue(self) -> int | None:
         return self._connectEventPacketCounterValue
 
-    # A Packet object containing the last received connect request.
     @property
     def currentConnectRequest(self):
         return self._currentConnectRequest
 
-    # A boolean indicating whether the sniffed device is in a connection.
     @property
-    def inConnection(self):
+    def inConnection(self) -> bool:
         return self._inConnection
 
-    # The internal state of the sniffer. States are defined in SnifferCollector module. Valid values are 0-2.
     @property
-    def state(self):
+    def state(self) -> int:
         return self._state
 
-    # The COM port of the sniffer hardware. During initialization, this value is a preset.
     @property
-    def portnum(self):
+    def portnum(self) -> str | None:
         return self._portnum
 
-    # The version number of the API software.
     @property
-    def swversion(self):
+    def swversion(self) -> str:
         return VERSION_STRING
 
-    # The version number of the sniffer firmware.
     @property
-    def fwversion(self):
+    def fwversion(self) -> str:
         return self._fwversion
 
-    # API ENDS HERE
-
-    # Private method
-    def run(self):
+    def run(self) -> None:
         try:
             self._setup()
             self.runSniffer()
@@ -234,14 +198,11 @@ class Sniffer(threading.Thread, SnifferCollector.SnifferCollector):
             fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
             lineno = exc_tb.tb_lineno
             logging.info(
-                "exiting ("
-                + str(type(e))
-                + " in "
-                + fname
-                + " at "
-                + str(lineno)
-                + "): "
-                + str(e)
+                "exiting (%s in %s at %d): %s",
+                type(e),
+                fname,
+                lineno,
+                str(e),
             )
             self.goodExit = False
         except (BrokenPipeError, OSError):
@@ -250,20 +211,19 @@ class Sniffer(threading.Thread, SnifferCollector.SnifferCollector):
         except Exception as e:
             import traceback
 
-            logging.exception("CRASH: {}".format(e))
+            logging.exception("CRASH: %s", e)
             logging.exception(traceback.format_exc())
-            logging.exception("internal error: {}".format(repr(e)))
             self.goodExit = False
         else:
             self.goodExit = True
 
-    # Private method
-    def comPortFound(self, notification):
+    def comPortFound(self, notification) -> None:
+        """Callback when COM port is detected."""
         self._portnum = notification.msg["comPort"]
         self._boardId = self._makeBoardId()
 
-    # Private method
-    def runSniffer(self):
+    def runSniffer(self) -> None:
+        """Main sniffer loop."""
         if not self._exit:
             self._continuouslyPipe()
         else:
