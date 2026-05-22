@@ -35,58 +35,83 @@
 # OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
+from __future__ import annotations
+
 import threading
+from collections.abc import Callable
+from typing import Any
 
 
 class Notification:
-    def __init__(self, key, msg=None):
-        if type(key) is not str:
-            raise TypeError("Invalid notification key: " + str(key))
-        self.key = key
-        self.msg = msg
+    """Simple notification object carrying a key and optional message."""
 
-    def __repr__(self):
-        return "Notification (key: %s, msg: %s)" % (str(self.key), str(self.msg))
+    def __init__(self, key: str, msg: Any = None):
+        if not isinstance(key, str):
+            raise TypeError(f"Invalid notification key: {key!r}")
+        self.key: str = key
+        self.msg: Any = msg
+
+    def __repr__(self) -> str:
+        return f"Notification(key={self.key!r}, msg={self.msg!r})"
+
+
+Callback = Callable[[Notification], None]
 
 
 class Notifier:
-    def __init__(self, callbacks=[], **kwargs):
-        self.callbacks = {}
-        self.callbackLock = threading.RLock()
+    """Thread‑safe publish/subscribe notification dispatcher."""
 
-        for callback in callbacks:
-            self.subscribe(*callback)
+    def __init__(
+        self,
+        callbacks: list[tuple[str, Callback]] | None = None,
+        **kwargs: Any,
+    ):
+        self._callbacks: dict[str, list[Callback]] = {}
+        self._lock = threading.RLock()
 
-    def clearCallbacks(self):
-        with self.callbackLock:
-            self.callbacks.clear()
+        if callbacks:
+            for key, cb in callbacks:
+                self.subscribe(key, cb)
 
-    def subscribe(self, key, callback):
-        with self.callbackLock:
-            if callback not in self.getCallbacks(key):
-                self.getCallbacks(key).append(callback)
+    def clearCallbacks(self) -> None:
+        with self._lock:
+            self._callbacks.clear()
 
-    def unSubscribe(self, key, callback):
-        with self.callbackLock:
-            if callback in self.getCallbacks(key):
-                self.getCallbacks(key).remove(callback)
+    def subscribe(self, key: str, callback: Callback) -> None:
+        with self._lock:
+            lst = self._callbacks.setdefault(key, [])
+            if callback not in lst:
+                lst.append(callback)
 
-    def getCallbacks(self, key):
-        with self.callbackLock:
-            if key not in self.callbacks:
-                self.callbacks[key] = []
-            return self.callbacks[key]
+    def unSubscribe(self, key: str, callback: Callback) -> None:
+        with self._lock:
+            lst = self._callbacks.get(key)
+            if lst and callback in lst:
+                lst.remove(callback)
 
-    def notify(self, key=None, msg=None, notification=None):
-        with self.callbackLock:
-            if notification == None:
+    def getCallbacks(self, key: str) -> list[Callback]:
+        with self._lock:
+            return self._callbacks.setdefault(key, [])
+
+    def notify(
+        self,
+        key: str | None = None,
+        msg: Any = None,
+        notification: Notification | None = None,
+    ) -> None:
+        """Send a notification to all subscribers of the key and '*'."""
+        with self._lock:
+            if notification is None:
                 notification = Notification(key, msg)
 
-            for callback in self.getCallbacks(notification.key):
-                callback(notification)
+            # Call specific listeners
+            for cb in self._callbacks.get(notification.key, []):
+                cb(notification)
 
-            for callback in self.getCallbacks("*"):
-                callback(notification)
+            # Call wildcard listeners
+            for cb in self._callbacks.get("*", []):
+                cb(notification)
 
-    def passOnNotification(self, notification):
+    def passOnNotification(self, notification: Notification) -> None:
+        """Forward an existing notification."""
         self.notify(notification=notification)
