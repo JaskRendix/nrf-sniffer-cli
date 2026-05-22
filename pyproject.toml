@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61", "setuptools_scm[toml]>=7"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nrf-sniffer-cli"
+description = "Python libraries for nRF Sniffer"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Matias Karhumaa", email = "matias.karhumaa@gmail.com" }
+]
+keywords = ["ble", "sniffer", "bluetooth"]
+license = { text = "BSD-3-Clause" }
+
+dynamic = ["version"]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Build Tools",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "pyserial>=3.4",
+    "psutil",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "coverage",
+    "mock",
+]
+
+[project.urls]
+Source = "https://github.com/embedded-community/nrf-sniffer-cli"
+
+[project.scripts]
+nrf-sniffer-cli = "SnifferAPI.cli:main"
+
+[tool.setuptools]
+packages = { find = { exclude = ["contrib", "docs", "tests"] } }
+
+[tool.setuptools_scm]
+write_to = "SnifferAPI/_version.py"

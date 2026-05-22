@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>nRF Sniffer Live Graph</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            text-align: center;
+            margin: 0;
+        }
+        .container {
+            width: 90%;
+            max-width: 800px;
+            margin: auto;
+            padding-top: 20px;
+        }
+        .gauge {
+            font-size: 2.5em;
+            color: #00e676;
+            margin-bottom: 10px;
+        }
+        .chart-container {
+            position: relative;
+            height: 300px;
+            width: 100%;
+            background: #000;
+            border-radius: 8px;
+            padding: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Signal Strength History</h1>
+        <div id="name">Scanning...</div>
+        <div id="rssi" class="gauge">-- dBm</div>
+
+        <div class="chart-container">
+            <canvas id="rssiChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const ctx = document.getElementById('rssiChart').getContext('2d');
+        const maxDataPoints = 60;
+
+        const rssiChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array(maxDataPoints).fill(''),
+                datasets: [{
+                    label: 'RSSI (dBm)',
+                    data: Array(maxDataPoints).fill(null),
+                    borderColor: '#00e676',
+                    backgroundColor: 'rgba(0, 230, 118, 0.2)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { min: -100, max: -20, grid: { color: '#333' } },
+                    x: { display: false }
+                },
+                plugins: { legend: { display: false } },
+                animation: { duration: 0 }
+            }
+        });
+
+        var socket = io();
+        socket.on('new_packet', function(msg) {
+            document.getElementById('rssi').innerText = msg.rssi + " dBm";
+            document.getElementById('name').innerText = "Device: " + msg.name;
+
+            rssiChart.data.datasets[0].data.push(msg.rssi);
+            rssiChart.data.datasets[0].data.shift();
+            rssiChart.update();
+        });
+    </script>
+</body>
+</html>
