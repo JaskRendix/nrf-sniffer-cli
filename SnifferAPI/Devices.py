@@ -36,117 +36,141 @@
 # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 # OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from __future__ import annotations
+
 import logging
 import threading
+from collections.abc import Iterable
 
 from . import Notifications
 
 
 class DeviceList(Notifications.Notifier):
-    def __init__(self, *args, **kwargs):
-        Notifications.Notifier.__init__(self, *args, **kwargs)
-        logging.info("args: " + str(args))
-        logging.info("kwargs: " + str(kwargs))
-        self._deviceListLock = threading.RLock()
-        with self._deviceListLock:
-            self.devices = []
+    """Thread‑safe list of discovered BLE devices with update notifications."""
 
-    def __len__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._deviceListLock = threading.RLock()
+        self.devices: list[Device] = []
+
+    def __len__(self) -> int:
         return len(self.devices)
 
-    def __repr__(self):
-        return "Sniffer Device List: " + str(self.asList())
+    def __repr__(self) -> str:
+        return f"Sniffer Device List: {self.asList()}"
 
-    def clear(self):
-        logging.info("Clearing")
+    def clear(self) -> None:
+        logging.info("Clearing device list")
         with self._deviceListLock:
-            self.devices = []
+            self.devices.clear()
             self.notify("DEVICES_CLEARED")
 
-    def appendOrUpdate(self, newDevice):
+    def appendOrUpdate(self, newDevice: Device) -> None:
+        """Insert a new device or update an existing one."""
         with self._deviceListLock:
-            existingDevice = self.find(newDevice)
+            existing = self.find(newDevice)
 
-            # Add device to the list of devices being displayed, but only if CRC is OK
-            if existingDevice == None:
+            if existing is None:
                 self.append(newDevice)
+                return
+
+            updated = False
+
+            # Update name if previously unknown
+            if newDevice.name != '""' and existing.name == '""':
+                existing.name = newDevice.name
+                updated = True
+
+            # Update RSSI if significantly changed
+            if newDevice.RSSI != 0 and (
+                existing.RSSI < (newDevice.RSSI - 5)
+                or existing.RSSI > (newDevice.RSSI + 2)
+            ):
+                existing.RSSI = newDevice.RSSI
+                updated = True
+
+            if updated:
+                self.notify("DEVICE_UPDATED", existing)
+
+    def append(self, device: Device) -> None:
+        with self._deviceListLock:
+            self.devices.append(device)
+            self.notify("DEVICE_ADDED", device)
+
+    def find(self, key: list[int] | int | str | Device) -> Device | None:
+        """Find a device by address list, index, name, or Device instance."""
+        with self._deviceListLock:
+            if isinstance(key, list):
+                return next((d for d in self.devices if d.address == key), None)
+
+            if isinstance(key, int):
+                return self.devices[key] if 0 <= key < len(self.devices) else None
+
+            if isinstance(key, str):
+                return next(
+                    (d for d in self.devices if d.name in (key, f'"{key}"')),
+                    None,
+                )
+
+            if isinstance(key, Device):
+                return self.find(key.address)
+
+        return None
+
+    def remove(self, key: list[int] | int | Device) -> None:
+        with self._deviceListLock:
+            if isinstance(key, list):
+                device = self.find(key)
+                if device:
+                    self.devices.remove(device)
+
+            elif isinstance(key, int):
+                device = self.devices.pop(key)
+
+            elif isinstance(key, Device):
+                device = self.find(key.address)
+                if device:
+                    self.devices.remove(device)
+
             else:
-                updated = False
-                if (newDevice.name != '""') and (existingDevice.name == '""'):
-                    existingDevice.name = newDevice.name
-                    updated = True
+                return
 
-                if (
-                    newDevice.RSSI != 0
-                    and (existingDevice.RSSI < (newDevice.RSSI - 5))
-                    or (existingDevice.RSSI > (newDevice.RSSI + 2))
-                ):
-                    existingDevice.RSSI = newDevice.RSSI
-                    updated = True
+            self.notify("DEVICE_REMOVED", device)
 
-                if updated:
-                    self.notify("DEVICE_UPDATED", existingDevice)
-
-    def append(self, device):
-        self.devices.append(device)
-        self.notify("DEVICE_ADDED", device)
-
-    def find(self, id):
-        if type(id) == list:
-            for dev in self.devices:
-                if dev.address == id:
-                    return dev
-        elif type(id) == int:
-            return self.devices[id]
-        elif type(id) == str:
-            for dev in self.devices:
-                if dev.name in [id, '"' + id + '"']:
-                    return dev
-        elif id.__class__.__name__ == "Device":
-            return self.find(id.address)
+    def index(self, device: Device) -> int | None:
+        with self._deviceListLock:
+            for idx, dev in enumerate(self.devices):
+                if dev.address == device.address:
+                    return idx
         return None
 
-    def remove(self, id):
-        if type(id) == list:  # address
-            device = self.devices.pop(self.devices.index(self.find(id)))
-        elif type(id) == int:
-            device = self.devices.pop(id)
-        elif type(id) == Device:
-            device = self.devices.pop(self.devices.index(self.find(id.address)))
-        self.notify("DEVICE_REMOVED", device)
+    def setFollowed(self, device: Device) -> None:
+        with self._deviceListLock:
+            if device in self.devices:
+                for dev in self.devices:
+                    dev.followed = False
+                device.followed = True
 
-    def index(self, device):
-        index = 0
-        for dev in self.devices:
-            if dev.address == device.address:
-                return index
-            index += 1
-        return None
-
-    def setFollowed(self, device):
-        if device in self.devices:
-            for dev in self.devices:
-                dev.followed = False
-            device.followed = True
         self.notify("DEVICE_FOLLOWED", device)
 
-    def asList(self):
-        return self.devices[:]
+    def asList(self) -> list[Device]:
+        with self._deviceListLock:
+            return list(self.devices)
 
 
 class Device:
-    def __init__(self, address, name, RSSI):
-        self.address = address
-        self.name = name
-        self.RSSI = RSSI
-        self.followed = False
+    """Simple BLE device representation."""
 
-    def __repr__(self):
-        return 'Bluetooth LE device "' + self.name + '" (' + str(self.address) + ")"
+    def __init__(self, address: list[int], name: str, RSSI: int):
+        self.address: list[int] = address
+        self.name: str = name
+        self.RSSI: int = RSSI
+        self.followed: bool = False
+
+    def __repr__(self) -> str:
+        return f'Bluetooth LE device "{self.name}" ({self.address})'
 
 
-def listToString(list):
-    str = ""
-    for i in list:
-        str += chr(i)
-    return str
+def listToString(values: Iterable[int]) -> str:
+    """Convert a list of byte values to a string."""
+    return bytes(values).decode("latin1")
