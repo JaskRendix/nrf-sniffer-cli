@@ -190,8 +190,12 @@ class Uart:
         if getattr(self, "portnum", None):
             Filelock.unlock(self.portnum)
 
-    def __del__(self) -> None:
-        self.close()
+    def __del__(self):
+        if hasattr(self, "ser") or hasattr(self, "portnum"):
+            try:
+                self.close()
+            except Exception:
+                pass
 
     def switchBaudRate(self, newBaudRate: int) -> None:
         assert self.ser is not None
