@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # Copyright (c) Nordic Semiconductor ASA
 # All rights reserved.
 #
@@ -34,16 +36,32 @@
 # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 # OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from __future__ import annotations
+
 import copy
 import logging
+import random
 import sys
 import threading
 import time
+from typing import Any
 
 from serial import SerialException
 
 from . import CaptureFiles, Devices, Exceptions, Notifications, Packet
-from .Types import *
+from .Types import EVENT_DISCONNECT  # noqa: F401
+from .Types import (
+    EVENT_CONNECT,
+    EVENT_FOLLOW,
+    EVENT_PACKET_ADV_PDU,
+    EVENT_PACKET_DATA_PDU,
+    PACKET_TYPE_ADVERTISING,
+    PING_RESP,
+    PROTOVER_V3,
+    RESP_TIMESTAMP,
+    RESP_VERSION,
+    SWITCH_BAUD_RATE_RESP,
+)
 
 STATE_INITIALIZING = 0
 STATE_SCANNING = 1
@@ -51,151 +69,186 @@ STATE_FOLLOWING = 2
 
 
 class SnifferCollector(Notifications.Notifier):
-    def __init__(self, portnum=None, baudrate=None, *args, **kwargs):
-        Notifications.Notifier.__init__(self, *args, **kwargs)
-        self._portnum = portnum
-        self._fwversion = "Unknown version"
+    """Central collector for packets, devices, and sniffer state."""
+
+    def __init__(
+        self,
+        portnum: str | None = None,
+        baudrate: int | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+
+        self._portnum: str | None = portnum
+        self._fwversion: str = "Unknown version"
+
+        self._state_lock = threading.RLock()
         self._setState(STATE_INITIALIZING)
+
         self._captureHandler = CaptureFiles.CaptureFileHandler(
             capture_file_path=kwargs.get("capture_file_path", None)
         )
-        self._exit = False
-        self._connectionAccessAddress = None
+
+        self._exit: bool = False
+        self._connectionAccessAddress: list[int] | None = None
+
         self._packetListLock = threading.RLock()
         with self._packetListLock:
-            self._packets = []
+            self._packets: list[Any] = []
 
-        self._packetReader = Packet.PacketReader(
-            self._portnum, baudrate=baudrate, callbacks=[("*", self.passOnNotification)]
+        self._packetReader: Packet.PacketReader = Packet.PacketReader(
+            self._portnum,
+            baudrate=baudrate,
+            callbacks=[("*", self.passOnNotification)],
         )
-        self._devices = Devices.DeviceList(callbacks=[("*", self.passOnNotification)])
+        self._devices: Devices.DeviceList = Devices.DeviceList(
+            callbacks=[("*", self.passOnNotification)]
+        )
 
-        self._missedPackets = 0
-        self._packetsInLastConnection = None
-        self._connectEventPacketCounterValue = None
-        self._inConnection = False
-        self._currentConnectRequest = None
+        self._missedPackets: int = 0
+        self._packetsInLastConnection: int | None = None
+        self._connectEventPacketCounterValue: int | None = None
+        self._inConnection: bool = False
+        self._currentConnectRequest: Any | None = None
 
-        self._nProcessedPackets = 0
+        self._nProcessedPackets: int = 0
 
-        self._switchingBaudRate = False
+        self._switchingBaudRate: bool = False
+        self._proposedBaudRate: int | None = None
+        self._attemptedBaudRates: list[int] = []
 
-        self._attemptedBaudRates = []
+        self._last_time: float | None = None
+        self._last_timestamp: int = 0
+        self._boardId: int = self._makeBoardId()
 
-        self._last_time = None
-        self._last_timestamp = 0
-        self._boardId = self._makeBoardId()
+    def __del__(self) -> None:
+        # Be defensive: __del__ can run during interpreter shutdown
+        try:
+            self._doExit()
+        except Exception:
+            pass
 
-    def __del__(self):
-        self._doExit()
-
-    def _setup(self):
+    def _setup(self) -> None:
         self._packetReader.setup()
 
-    def _makeBoardId(self):
+    def _makeBoardId(self) -> int:
         try:
             if sys.platform == "win32":
                 boardId = int(self._packetReader.portnum.split("COM")[1])
-                logging.info("board ID: %d" % boardId)
+                logging.info("board ID: %d", boardId)
             elif sys.platform == "linux":
                 boardId = int(self._packetReader.portnum.split("ttyACM")[1])
-                logging.info("board ID: %d" % boardId)
+                logging.info("board ID: %d", boardId)
             else:
-                # Generate a random boardID
                 raise IndexError()
-        except (IndexError, AttributeError):
-            import random
-
+        except (IndexError, AttributeError, ValueError):
             random.seed()
             boardId = random.randint(0, 255)
-            logging.info("board ID (random): %d" % boardId)
+            logging.info("board ID (random): %d", boardId)
 
         return boardId
 
     @property
-    def state(self):
-        return self._state
+    def state(self) -> int:
+        with self._state_lock:
+            return self._state
 
-    def _setState(self, newState):
-        self._state = newState
+    def _setState(self, newState: int) -> None:
+        with self._state_lock:
+            self._state = newState
         self.notify("STATE_CHANGE", newState)
 
-    def _switchBaudRate(self, newBaudRate):
-        if newBaudRate in self._packetReader.uart.ser.BAUDRATES:
+    def _switchBaudRate(self, newBaudRate: int) -> None:
+        uart = getattr(self._packetReader, "uart", None)
+        ser = getattr(uart, "ser", None)
+        baudrates = getattr(ser, "BAUDRATES", None)
+
+        if baudrates and newBaudRate in baudrates:
             self._packetReader.sendSwitchBaudRate(newBaudRate)
             self._switchingBaudRate = True
             self._proposedBaudRate = newBaudRate
             self._attemptedBaudRates.append(newBaudRate)
 
-    def _addDevice(self, device):
+    def _addDevice(self, device: Devices.Device) -> None:
         self._devices.appendOrUpdate(device)
 
-    def _processBLEPacket(self, packet):
+    def _processBLEPacket(self, packet: Any) -> None:
         packet.boardId = self._boardId
 
         if packet.protover >= PROTOVER_V3:
             if self._last_time is None:
-                # Timestamp from Host
                 packet.time = time.time()
+                self._last_time = packet.time
+                self._last_timestamp = getattr(packet, "timestamp", 0)
             else:
-                # Timestamp using reference and packet timestamp diff
-                if packet.timestamp < self._last_timestamp:
-                    time_diff = (1 << 32) - (self._last_timestamp - packet.timestamp)
+                ts = getattr(packet, "timestamp", 0)
+                if ts < self._last_timestamp:
+                    time_diff = (1 << 32) - (self._last_timestamp - ts)
                 else:
-                    time_diff = packet.timestamp - self._last_timestamp
+                    time_diff = ts - self._last_timestamp
 
                 packet.time = self._last_time + (time_diff / 1_000_000)
-
                 self._last_time = packet.time
-                self._last_timestamp = packet.timestamp
+                self._last_timestamp = ts
         else:
-            # Timestamp from Host
             packet.time = time.time()
 
         self._appendPacket(packet)
-
         self.notify("NEW_BLE_PACKET", {"packet": packet})
         self._captureHandler.writePacket(packet)
 
         self._nProcessedPackets += 1
-        if packet.OK:
-            try:
-                if packet.blePacket.type == PACKET_TYPE_ADVERTISING:
 
-                    if self.state == STATE_FOLLOWING and packet.blePacket.advType == 5:
-                        self._connectionAccessAddress = packet.blePacket.accessAddress
+        if not getattr(packet, "OK", False):
+            return
 
-                    if self.state == STATE_FOLLOWING and packet.blePacket.advType == 4:
-                        newDevice = Devices.Device(
-                            address=packet.blePacket.advAddress,
-                            name=packet.blePacket.name,
-                            RSSI=packet.RSSI,
-                        )
-                        self._devices.appendOrUpdate(newDevice)
+        try:
+            self._handleAdvertisingPacket(packet)
+        except Exception as e:
+            logging.exception("packet processing error %s", str(e))
+            self.notify("PACKET_PROCESSING_ERROR", {"errorString": str(e)})
 
-                    if self.state == STATE_SCANNING:
-                        if (
-                            packet.blePacket.advType in [0, 1, 2, 4, 6, 7]
-                            and packet.blePacket.advAddress != None
-                            and packet.crcOK
-                            and not packet.direction
-                        ):
-                            newDevice = Devices.Device(
-                                address=packet.blePacket.advAddress,
-                                name=packet.blePacket.name,
-                                RSSI=packet.RSSI,
-                            )
-                            self._devices.appendOrUpdate(newDevice)
+    def _handleAdvertisingPacket(self, packet: Any) -> None:
+        ble = getattr(packet, "blePacket", None)
+        if ble is None:
+            return
 
-            except Exception as e:
-                logging.exception("packet processing error %s" % str(e))
-                self.notify("PACKET_PROCESSING_ERROR", {"errorString": str(e)})
+        if ble.type != PACKET_TYPE_ADVERTISING:
+            return
 
-    def _continuouslyPipe(self):
+        if self.state == STATE_FOLLOWING and getattr(ble, "advType", None) == 5:
+            self._connectionAccessAddress = ble.accessAddress
+
+        if self.state == STATE_FOLLOWING and getattr(ble, "advType", None) == 4:
+            newDevice = Devices.Device(
+                address=ble.advAddress,
+                name=ble.name,
+                RSSI=packet.RSSI,
+            )
+            self._devices.appendOrUpdate(newDevice)
+
+        if self.state == STATE_SCANNING:
+            advType = getattr(ble, "advType", None)
+            advAddress = getattr(ble, "advAddress", None)
+            if (
+                advType in [0, 1, 2, 4, 6, 7]
+                and advAddress is not None
+                and getattr(packet, "crcOK", False)
+                and not getattr(packet, "direction", False)
+            ):
+                newDevice = Devices.Device(
+                    address=advAddress,
+                    name=ble.name,
+                    RSSI=packet.RSSI,
+                )
+                self._devices.appendOrUpdate(newDevice)
+
+    def _continuouslyPipe(self) -> None:
         while not self._exit:
             try:
                 packet = self._packetReader.getPacket(timeout=12)
-                if packet == None or not packet.valid:
+                if packet is None or not getattr(packet, "valid", False):
                     raise Exceptions.InvalidPacketException("")
             except Exceptions.SnifferTimeout as e:
                 logging.info(str(e))
@@ -207,74 +260,109 @@ class SnifferCollector(Notifications.Notifier):
             except Exceptions.InvalidPacketException:
                 pass
             else:
-                if (
-                    packet.id == EVENT_PACKET_DATA_PDU
-                    or packet.id == EVENT_PACKET_ADV_PDU
-                ):
-                    self._processBLEPacket(packet)
-                elif packet.id == EVENT_FOLLOW:
-                    # This packet has no value for the user.
-                    pass
-                elif packet.id == EVENT_CONNECT:
-                    self._connectEventPacketCounterValue = packet.packetCounter
-                    self._inConnection = True
-                    # copy it because packets are eventually deleted
-                    self._currentConnectRequest = copy.copy(
-                        self._findPacketByPacketCounter(
-                            self._connectEventPacketCounterValue - 1
-                        )
-                    )
-                elif packet.id == EVENT_DISCONNECT:
-                    if self._inConnection:
-                        self._packetsInLastConnection = (
-                            packet.packetCounter - self._connectEventPacketCounterValue
-                        )
-                        self._inConnection = False
-                elif packet.id == SWITCH_BAUD_RATE_RESP and self._switchingBaudRate:
-                    self._switchingBaudRate = False
-                    if packet.baudRate == self._proposedBaudRate:
-                        self._packetReader.switchBaudRate(self._proposedBaudRate)
-                    else:
-                        self._switchBaudRate(packet.baudRate)
-                elif packet.id == PING_RESP:
-                    if hasattr(packet, "version"):
-                        versions = {
-                            1116: "3.1.0",
-                            1115: "3.0.0",
-                            1114: "2.0.0",
-                            1113: "2.0.0-beta-3",
-                            1112: "2.0.0-beta-1",
-                        }
-                        self._fwversion = versions.get(
-                            packet.version, "SVN rev: %d" % packet.version
-                        )
-                        logging.info("Firmware version %s" % self._fwversion)
-                elif packet.id == RESP_VERSION:
-                    self._fwversion = packet.version
-                    logging.info("Firmware version %s" % self._fwversion)
-                elif packet.id == RESP_TIMESTAMP:
-                    # Use current time as timestamp reference
-                    self._last_time = time.time()
-                    self._last_timestamp = packet.timestamp
+                self._dispatchPacket(packet)
 
-                    lt = time.localtime(self._last_time)
-                    usecs = int((self._last_time - int(self._last_time)) * 1_000_000)
-                    logging.info(
-                        f"Firmware timestamp {self._last_timestamp} reference: "
-                        f'{time.strftime("%b %d %Y %X", lt)}.{usecs} {time.strftime("%Z", lt)}'
-                    )
-                else:
-                    logging.info("Unknown packet ID")
+    def _dispatchPacket(self, packet: Any) -> None:
+        pid = getattr(packet, "id", None)
 
-    def _findPacketByPacketCounter(self, packetCounterValue):
+        if pid in (EVENT_PACKET_DATA_PDU, EVENT_PACKET_ADV_PDU):
+            self._processBLEPacket(packet)
+        elif pid == EVENT_FOLLOW:
+            # No user-visible value
+            pass
+        elif pid == EVENT_CONNECT:
+            self._handleConnect(packet)
+        elif pid == EVENT_DISCONNECT:
+            self._handleDisconnect(packet)
+        elif pid == SWITCH_BAUD_RATE_RESP and self._switchingBaudRate:
+            self._handleSwitchBaudRateResp(packet)
+        elif pid == PING_RESP:
+            self._handlePingResp(packet)
+        elif pid == RESP_VERSION:
+            self._fwversion = packet.version
+            logging.info("Firmware version %s", self._fwversion)
+        elif pid == RESP_TIMESTAMP:
+            self._handleTimestampResp(packet)
+        else:
+            logging.info("Unknown packet ID")
+
+    def _handleConnect(self, packet: Any) -> None:
+        self._connectEventPacketCounterValue = packet.packetCounter
+        self._inConnection = True
+        prev = self._findPacketByPacketCounter(self._connectEventPacketCounterValue - 1)
+        self._currentConnectRequest = copy.copy(prev) if prev is not None else None
+
+    def _handleDisconnect(self, packet: Any) -> None:
+        if self._inConnection and self._connectEventPacketCounterValue is not None:
+            self._packetsInLastConnection = (
+                packet.packetCounter - self._connectEventPacketCounterValue
+            )
+            self._inConnection = False
+
+    def _handleSwitchBaudRateResp(self, packet: Any) -> None:
+        self._switchingBaudRate = False
+        if getattr(packet, "baudRate", None) == self._proposedBaudRate:
+            self._packetReader.switchBaudRate(self._proposedBaudRate)
+        else:
+            self._switchBaudRate(packet.baudRate)
+
+    def _handlePingResp(self, packet: Any) -> None:
+        if hasattr(packet, "version"):
+            versions = {
+                1116: "3.1.0",
+                1115: "3.0.0",
+                1114: "2.0.0",
+                1113: "2.0.0-beta-3",
+                1112: "2.0.0-beta-1",
+            }
+            self._fwversion = versions.get(
+                packet.version, "SVN rev: %d" % packet.version
+            )
+            logging.info("Firmware version %s", self._fwversion)
+
+    def _handleTimestampResp(self, packet: Any) -> None:
+        self._last_time = time.time()
+        self._last_timestamp = packet.timestamp
+
+        lt = time.localtime(self._last_time)
+        usecs = int((self._last_time - int(self._last_time)) * 1_000_000)
+        logging.info(
+            "Firmware timestamp %d reference: %s.%06d %s",
+            self._last_timestamp,
+            time.strftime("%b %d %Y %X", lt),
+            usecs,
+            time.strftime("%Z", lt),
+        )
+
+    def _findPacketByPacketCounter(self, packetCounterValue: int) -> Any | None:
         with self._packetListLock:
             for i in range(-1, -1 - len(self._packets), -1):
-                # iterate backwards through packets
-                if self._packets[i].packetCounter == packetCounterValue:
+                if (
+                    getattr(self._packets[i], "packetCounter", None)
+                    == packetCounterValue
+                ):
                     return self._packets[i]
         return None
 
-    def _startScanning(self, findScanRsp=False, findAux=False, scanCoded=False):
+    def _appendPacket(self, packet: Any) -> None:
+        with self._packetListLock:
+            if len(self._packets) > 100000:
+                self._packets = self._packets[20000:]
+            self._packets.append(packet)
+
+    def _getPackets(self, number: int = -1) -> list[Any]:
+        with self._packetListLock:
+            returnList = self._packets[0:number]
+            self._packets = self._packets[number:]
+        return returnList
+
+    def _clearPackets(self) -> None:
+        with self._packetListLock:
+            self._packets.clear()
+
+    def _startScanning(
+        self, findScanRsp: bool = False, findAux: bool = False, scanCoded: bool = False
+    ) -> None:
         logging.info("starting scan")
 
         if self.state == STATE_FOLLOWING:
@@ -284,49 +372,46 @@ class SnifferCollector(Notifications.Notifier):
         self._packetReader.sendScan(findScanRsp, findAux, scanCoded)
         self._packetReader.sendTK([0])
 
-    def _doExit(self):
+    def _doExit(self) -> None:
+        if self._exit:
+            return
         self._exit = True
         self.notify("APP_EXIT")
-        self._packetReader.doExit()
+        try:
+            self._packetReader.doExit()
+        except Exception:
+            logging.exception("Error while exiting packet reader")
+
         # Clear method references to avoid uncollectable cyclic references
-        self.clearCallbacks()
-        self._devices.clearCallbacks()
+        try:
+            self.clearCallbacks()
+        except Exception:
+            pass
+        try:
+            self._devices.clearCallbacks()
+        except Exception:
+            pass
 
     def _startFollowing(
         self,
-        device,
-        followOnlyAdvertisements=False,
-        followOnlyLegacy=False,
-        followCoded=False,
-    ):
+        device: Devices.Device,
+        followOnlyAdvertisements: bool = False,
+        followOnlyLegacy: bool = False,
+        followCoded: bool = False,
+    ) -> None:
         self._devices.setFollowed(device)
         logging.info(
-            "Sniffing device "
-            + str(self._devices.index(device))
-            + ' - "'
-            + device.name
-            + '"'
+            'Sniffing device %d - "%s"',
+            self._devices.index(device),
+            device.name,
         )
         self._packetReader.sendFollow(
-            device.address, followOnlyAdvertisements, followOnlyLegacy, followCoded
+            device.address,
+            followOnlyAdvertisements,
+            followOnlyLegacy,
+            followCoded,
         )
         self._setState(STATE_FOLLOWING)
 
-    def _clearDevices(self):
+    def _clearDevices(self) -> None:
         self._devices.clear()
-
-    def _appendPacket(self, packet):
-        with self._packetListLock:
-            if len(self._packets) > 100000:
-                self._packets = self._packets[20000:]
-            self._packets.append(packet)
-
-    def _getPackets(self, number=-1):
-        with self._packetListLock:
-            returnList = self._packets[0:number]
-            self._packets = self._packets[number:]
-        return returnList
-
-    def _clearPackets(self):
-        with self._packetListLock:
-            del self._packets[:]
