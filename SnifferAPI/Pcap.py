@@ -36,46 +36,48 @@
 # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 # OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from __future__ import annotations
 
 import struct
 
-# See:
-# - https://github.com/pcapng/pcapng
-# - https://www.tcpdump.org/linktypes/LINKTYPE_NORDIC_BLE.html
+# PCAP packet header: ts_sec, ts_usec, incl_len, orig_len
 PACKET_HEADER = struct.Struct("<LLLL")
-GLOBAL_HEADER = struct.pack(
+
+# PCAP global header for Nordic BLE link type (272)
+GLOBAL_HEADER: bytes = struct.pack(
     "<LHHIILL",
-    0xA1B2C3D4,  # PCAP magic number
-    2,  # PCAP major version
-    4,  # PCAP minor version
+    0xA1B2C3D4,  # Magic number
+    2,  # Major version
+    4,  # Minor version
     0,  # Reserved
     0,  # Reserved
-    0x0000FFFF,  # Max length of capture frame
-    272,
-)  # Nordic BLE link type
+    0x0000FFFF,  # Max capture length
+    272,  # LINKTYPE_NORDIC_BLE
+)
+
+__all__ = ["get_global_header", "create_packet"]
 
 
-def get_global_header():
-    """Get the PCAP global header."""
+def get_global_header() -> bytes:
+    """Return the PCAP global header."""
     return GLOBAL_HEADER
 
 
-def create_packet(packet: bytes, timestamp_seconds: float):
-    """Create a PCAP packet.
+def create_packet(packet: bytes | bytearray, timestamp_seconds: float) -> bytes:
+    """Create a PCAP packet record.
 
     Args:
-        packet (bytes): Packet in the Nordic BLE packet format.
-        timestamp_seconds (float): a relative timestamp in seconds.
+        packet: Raw Nordic BLE packet bytes.
+        timestamp_seconds: Relative timestamp in seconds.
 
     Returns:
-        bytes: a PCAP formatted packet.
+        A PCAP-formatted packet record.
     """
-    timestamp_floor = int(timestamp_seconds)
-    timestamp_offset_us = int((timestamp_seconds - timestamp_floor) * 1_000_000)
+    if not isinstance(packet, (bytes, bytearray)):
+        raise TypeError("packet must be bytes or bytearray")
 
-    return (
-        struct.pack(
-            "<LLLL", timestamp_floor, timestamp_offset_us, len(packet), len(packet)
-        )
-        + packet
-    )
+    ts_sec = int(timestamp_seconds)
+    ts_usec = int((timestamp_seconds - ts_sec) * 1_000_000)
+
+    header = PACKET_HEADER.pack(ts_sec, ts_usec, len(packet), len(packet))
+    return header + bytes(packet)
