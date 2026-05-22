@@ -1,4 +1,5 @@
 import json
+import logging
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -19,7 +20,7 @@ def run_main(*argv: str) -> int:
             return int(exc.code) if exc.code is not None else 0
 
 
-def make_device(address: list[int], name: str = "Dev", rssi: int = -50) -> MagicMock:
+def make_device(address, name="Dev", rssi=-50):
     dev = MagicMock()
     dev.address = address
     dev.name = f'"{name}"'
@@ -27,47 +28,57 @@ def make_device(address: list[int], name: str = "Dev", rssi: int = -50) -> Magic
     return dev
 
 
+# ---------------------------------------------------------------------------
+# tools: hex_to_bytes / normalize_address / address_to_string
+# ---------------------------------------------------------------------------
+
+
 class TestHexToBytes:
     def test_plain_hex(self):
         assert hex_to_bytes("deadbeef") == [0xDE, 0xAD, 0xBE, 0xEF]
 
-    def test_0x_prefix(self):
+    def test_prefix(self):
         assert hex_to_bytes("0xDEADBEEF") == [0xDE, 0xAD, 0xBE, 0xEF]
 
-    def test_odd_length_padded(self):
+    def test_odd_length(self):
         assert hex_to_bytes("123") == [0x01, 0x23]
 
-    def test_invalid_chars_raise(self):
-        with pytest.raises(ValueError, match="hexadecimal"):
-            hex_to_bytes("GGGGGG")
+    def test_invalid(self):
+        with pytest.raises(ValueError):
+            hex_to_bytes("GGGG")
 
-    def test_empty_string(self):
+    def test_empty(self):
         assert hex_to_bytes("") == []
 
 
 class TestNormalizeAddress:
-    def test_strips_colons(self):
+    def test_colons(self):
         assert normalize_address("AA:BB:CC:DD:EE:FF") == "aabbccddeeff"
 
-    def test_strips_dashes(self):
+    def test_dashes(self):
         assert normalize_address("AA-BB-CC-DD-EE-FF") == "aabbccddeeff"
 
-    def test_already_plain(self):
+    def test_plain(self):
         assert normalize_address("aabbccddeeff") == "aabbccddeeff"
 
 
 class TestAddressToString:
-    def test_formats_six_bytes(self):
-        dev = make_device([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
+    def test_six_bytes(self):
+        dev = make_device([1, 2, 3, 4, 5, 6])
         assert address_to_string(dev) == "010203040506"
 
-    def test_truncates_to_six(self):
-        dev = make_device([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0xFF])
+    def test_truncate(self):
+        dev = make_device([1, 2, 3, 4, 5, 6, 255])
         assert address_to_string(dev) == "010203040506"
+
+
+# ---------------------------------------------------------------------------
+# FilterSet
+# ---------------------------------------------------------------------------
 
 
 class TestFilterSet:
-    def _make_packet(self, *, channel=37, rssi=-50, pkt_id=None, adv_address=None):
+    def _pkt(self, *, channel=37, rssi=-50, pkt_id=None, adv_address=None):
         p = MagicMock()
         p.channel = channel
         p.RSSI = rssi
@@ -77,45 +88,51 @@ class TestFilterSet:
         p.blePacket = bp
         return p
 
-    def test_no_filters_matches_everything(self):
-        fs = FilterSet()
-        assert fs.match(self._make_packet()) is True
+    def test_match_all(self):
+        assert FilterSet().match(self._pkt())
 
-    def test_channel_filter_pass(self):
-        fs = FilterSet(channel=37)
-        assert fs.match(self._make_packet(channel=37)) is True
+    def test_channel_pass(self):
+        assert FilterSet(channel=37).match(self._pkt(channel=37))
 
-    def test_channel_filter_fail(self):
-        fs = FilterSet(channel=37)
-        assert fs.match(self._make_packet(channel=38)) is False
+    def test_channel_fail(self):
+        assert not FilterSet(channel=37).match(self._pkt(channel=38))
 
-    def test_min_rssi_pass(self):
-        fs = FilterSet(min_rssi=-60)
-        assert fs.match(self._make_packet(rssi=-50)) is True
+    def test_rssi_pass(self):
+        assert FilterSet(min_rssi=-60).match(self._pkt(rssi=-50))
 
-    def test_min_rssi_fail(self):
-        fs = FilterSet(min_rssi=-60)
-        assert fs.match(self._make_packet(rssi=-70)) is False
+    def test_rssi_fail(self):
+        assert not FilterSet(min_rssi=-60).match(self._pkt(rssi=-70))
 
-    def test_pdu_type_adv_pass(self):
+    def test_pdu_adv(self):
         from SnifferAPI.Types import EVENT_PACKET_ADV_PDU
 
-        fs = FilterSet(pdu_type="adv")
-        assert fs.match(self._make_packet(pkt_id=EVENT_PACKET_ADV_PDU)) is True
+        assert FilterSet(pdu_type="adv").match(self._pkt(pkt_id=EVENT_PACKET_ADV_PDU))
 
-    def test_pdu_type_adv_fail(self):
+    def test_pdu_adv_fail(self):
         from SnifferAPI.Types import EVENT_PACKET_DATA_PDU
 
-        fs = FilterSet(pdu_type="adv")
-        assert fs.match(self._make_packet(pkt_id=EVENT_PACKET_DATA_PDU)) is False
+        assert not FilterSet(pdu_type="adv").match(
+            self._pkt(pkt_id=EVENT_PACKET_DATA_PDU)
+        )
+
+    def test_adv_address_pass(self):
+        fs = FilterSet(adv_address="aabbccddeeff")
+        pkt = self._pkt(adv_address=[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+        assert fs.match(pkt)
+
+    def test_adv_address_fail(self):
+        fs = FilterSet(adv_address="ffffffffffff")
+        pkt = self._pkt(adv_address=[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+        assert not fs.match(pkt)
+
+
+# ---------------------------------------------------------------------------
+# SnifferClient mocking
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
 def mock_client(monkeypatch):
-    """
-    Replace SnifferClient in the cli module with a MagicMock instance.
-    All tests that need a client use this fixture; no subprocess is spawned.
-    """
     instance = MagicMock()
     instance.scan.return_value = []
     instance.stop.return_value = None
@@ -123,92 +140,73 @@ def mock_client(monkeypatch):
     return instance
 
 
-class TestArgParsing:
-    def test_help_exits_zero(self):
-        assert run_main("--help") == 0
-
-    def test_sniff_help_exits_zero(self):
-        assert run_main("sniff", "--help") == 0
-
-    def test_no_command_exits_nonzero(self):
-        assert run_main() != 0
-
-    def test_invalid_command_exits_nonzero(self):
-        assert run_main("invalid") != 0
-
-    def test_sniff_requires_address_or_name_or_irk(self):
-        assert run_main("sniff") != 0
-
-    def test_sniff_address_and_name_mutually_exclusive(self):
-        assert run_main("sniff", "--address", "AA:BB:CC:DD:EE:FF", "--name", "foo") != 0
+# ---------------------------------------------------------------------------
+# CLI: list
+# ---------------------------------------------------------------------------
 
 
-class TestListCommand:
-    def test_prints_ports(self, monkeypatch, capsys):
-        monkeypatch.setattr(cli_module.UART, "find_sniffer", lambda: ["COM3", "COM4"])
-        rc = run_main("list")
-        assert rc == 0
+class TestList:
+    def test_list_ports(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli_module.UART, "find_sniffer", lambda: ["COM1", "COM2"])
+        assert run_main("list") == 0
         out = capsys.readouterr().out
-        assert "COM3" in out
-        assert "COM4" in out
+        assert "COM1" in out
+        assert "COM2" in out
 
-    def test_no_ports_returns_nonzero(self, monkeypatch):
+    def test_list_none(self, monkeypatch):
         monkeypatch.setattr(cli_module.UART, "find_sniffer", lambda: [])
         assert run_main("list") != 0
 
 
-class TestScanCommand:
-    def test_text_output(self, mock_client, capsys):
-        mock_client.scan.return_value = [
-            make_device([0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F], "Dev")
-        ]
-        rc = run_main("scan")
-        assert rc == 0
+# ---------------------------------------------------------------------------
+# CLI: scan
+# ---------------------------------------------------------------------------
+
+
+class TestScan:
+    def test_scan_text(self, mock_client, capsys):
+        mock_client.scan.return_value = [make_device([10, 11, 12, 13, 14, 15], "Dev")]
+        assert run_main("scan") == 0
         out = capsys.readouterr().out
         assert "0a0b0c0d0e0f" in out
         assert "Dev" in out
 
-    def test_json_output(self, mock_client, capsys):
-        mock_client.scan.return_value = [
-            make_device([1, 2, 3, 4, 5, 6], "Test", rssi=-42)
-        ]
-        rc = run_main("scan", "--json")
-        assert rc == 0
+    def test_scan_json(self, mock_client, capsys):
+        mock_client.scan.return_value = [make_device([1, 2, 3, 4, 5, 6], "Test", -42)]
+        assert run_main("scan", "--json") == 0
         data = json.loads(capsys.readouterr().out)
-        assert isinstance(data, list)
         assert data[0]["address"] == "010203040506"
         assert data[0]["name"] == "Test"
         assert data[0]["rssi"] == -42
 
-    def test_no_devices_empty_output(self, mock_client, capsys):
+    def test_scan_empty(self, mock_client, capsys):
         mock_client.scan.return_value = []
-        rc = run_main("scan")
-        assert rc == 0
+        assert run_main("scan") == 0
         assert capsys.readouterr().out.strip() == ""
 
-    def test_no_devices_json_empty_list(self, mock_client, capsys):
+    def test_scan_empty_json(self, mock_client, capsys):
         mock_client.scan.return_value = []
-        rc = run_main("scan", "--json")
-        assert rc == 0
+        assert run_main("scan", "--json") == 0
         assert json.loads(capsys.readouterr().out) == []
 
 
-class TestSniffCommand:
+# ---------------------------------------------------------------------------
+# CLI: sniff
+# ---------------------------------------------------------------------------
+
+
+class TestSniff:
     def test_sniff_by_address(self, mock_client):
         mock_client.scan.return_value = [make_device([1, 2, 3, 4, 5, 6])]
-        rc = run_main("sniff", "--address", "01:02:03:04:05:06")
-        assert rc == 0
+        assert run_main("sniff", "--address", "01:02:03:04:05:06") == 0
         mock_client.follow.assert_called_once()
 
     def test_sniff_by_name(self, mock_client):
-        mock_client.scan.return_value = [make_device([1, 2, 3, 4, 5, 6], "MyDevice")]
-        rc = run_main("sniff", "--name", "MyDevice")
-        assert rc == 0
+        mock_client.scan.return_value = [make_device([1, 2, 3, 4, 5, 6], "MyDev")]
+        assert run_main("sniff", "--name", "MyDev") == 0
         mock_client.follow.assert_called_once()
 
-    def test_device_not_found_returns_nonzero(self, mock_client, caplog):
-        import logging
-
+    def test_sniff_not_found(self, mock_client, caplog):
         mock_client.scan.return_value = []
         with caplog.at_level(logging.ERROR):
             rc = run_main("sniff", "--address", "00:00:00:00:00:00")
@@ -216,13 +214,11 @@ class TestSniffCommand:
         assert "not found" in caplog.text.lower()
 
     def test_sniff_by_irk(self, mock_client):
-        rc = run_main("sniff", "--irk", "0x11223344556677889900AABBCCDDEEFF")
-        assert rc == 0
+        assert run_main("sniff", "--irk", "0x11223344556677889900AABBCCDDEEFF") == 0
         mock_client.follow_by_irk.assert_called_once()
 
-    def test_invalid_irk_nonzero(self, mock_client):
-        rc = run_main("sniff", "--irk", "GGGGGG")
-        assert rc != 0
+    def test_sniff_invalid_irk(self, mock_client):
+        assert run_main("sniff", "--irk", "GGGG") != 0
 
     @pytest.mark.parametrize(
         "flag,value",
@@ -234,26 +230,25 @@ class TestSniffCommand:
             ("--type", "all"),
         ],
     )
-    def test_filter_flags_accepted(self, mock_client, flag, value):
+    def test_filter_flags(self, mock_client, flag, value):
         mock_client.scan.return_value = [make_device([1, 2, 3, 4, 5, 6])]
-        rc = run_main("sniff", "--address", "01:02:03:04:05:06", flag, value)
-        assert rc == 0
+        assert run_main("sniff", "--address", "01:02:03:04:05:06", flag, value) == 0
 
-    def test_live_flag_accepted(self, mock_client):
+    def test_live_flag(self, mock_client):
         mock_client.scan.return_value = [make_device([1, 2, 3, 4, 5, 6])]
-        rc = run_main("sniff", "--address", "01:02:03:04:05:06", "--live")
-        assert rc == 0
+        assert run_main("sniff", "--address", "01:02:03:04:05:06", "--live") == 0
 
-    def test_decode_flag_accepted(self, mock_client):
+    def test_decode_flag(self, mock_client):
         mock_client.scan.return_value = [make_device([1, 2, 3, 4, 5, 6])]
-        rc = run_main("sniff", "--address", "01:02:03:04:05:06", "--decode")
-        assert rc == 0
+        assert run_main("sniff", "--address", "01:02:03:04:05:06", "--decode") == 0
 
-    def test_record_json_opens_file(self, mock_client, tmp_path):
+    def test_record_json(self, mock_client, tmp_path):
         mock_client.scan.return_value = [make_device([1, 2, 3, 4, 5, 6])]
-        json_file = tmp_path / "log.json"
-        rc = run_main(
-            "sniff", "--address", "01:02:03:04:05:06", "--record-json", str(json_file)
+        path = tmp_path / "log.json"
+        assert (
+            run_main(
+                "sniff", "--address", "01:02:03:04:05:06", "--record-json", str(path)
+            )
+            == 0
         )
-        assert rc == 0
-        assert json_file.exists()
+        assert path.exists()

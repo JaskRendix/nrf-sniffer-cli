@@ -18,3 +18,5 @@ env/
 .coverage
 .coverage.*
 htmlcov/
+
+SnifferAPI/_version.py
