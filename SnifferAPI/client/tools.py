@@ -41,7 +41,6 @@ import json
 import logging
 from typing import IO, Any
 
-from SnifferAPI import Devices
 from SnifferAPI.Devices import Device
 from SnifferAPI.Types import PACKET_TYPE_ADVERTISING, PACKET_TYPE_DATA
 
@@ -79,7 +78,7 @@ def format_packet(p: Any, *, decode: bool) -> str:
     if pkt_type == PACKET_TYPE_ADVERTISING:
         adv_addr: list[int] | None = getattr(bp, "advAddress", None)
         if adv_addr:
-            dev: Device = Devices.Device(address=adv_addr, name="", RSSI=0)
+            dev = Device(address=adv_addr, name="", RSSI=0)
             extra.append(f"addr={address_to_string(dev)}")
         name: str | None = getattr(bp, "name", None)
         if name:
@@ -109,7 +108,7 @@ def record_packet_json(p: Any, fh: IO[str]) -> None:
             "adv_type": getattr(bp, "advType", None),
             "name": getattr(bp, "name", None),
             "adv_address": (
-                address_to_string(Devices.Device(address=adv_addr, name="", RSSI=0))
+                address_to_string(Device(address=adv_addr, name="", RSSI=0))
                 if adv_addr
                 else None
             ),

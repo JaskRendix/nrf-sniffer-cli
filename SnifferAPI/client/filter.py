@@ -41,7 +41,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from SnifferAPI import Devices
 from SnifferAPI.client.tools import address_to_string, normalize_address
 from SnifferAPI.Devices import Device
 from SnifferAPI.Types import EVENT_PACKET_ADV_PDU, EVENT_PACKET_DATA_PDU
@@ -87,7 +86,7 @@ class FilterSet:
             if not adv_addr:
                 return False
 
-            dev: Device = Devices.Device(address=adv_addr, name="", RSSI=0)
+            dev = Device(address=adv_addr, name="", RSSI=0)
             if address_to_string(dev) != self.adv_address:
                 return False
 

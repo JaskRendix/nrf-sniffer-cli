@@ -44,7 +44,6 @@ import time
 # Only imported for typing; avoids runtime dependency
 from typing import IO, TYPE_CHECKING
 
-from SnifferAPI import UART, Devices, Sniffer
 from SnifferAPI.client.tools import (
     address_to_string,
     format_packet,
@@ -52,6 +51,8 @@ from SnifferAPI.client.tools import (
     record_packet_json,
 )
 from SnifferAPI.Devices import Device
+from SnifferAPI.Sniffer import Sniffer
+from SnifferAPI.UART import find_sniffer
 
 if TYPE_CHECKING:
     from SnifferAPI.client.sniffer import FilterSet
@@ -69,14 +70,14 @@ class SnifferClient:
     """High‑level wrapper around Nordic's Sniffer API with strong typing."""
 
     def __init__(self, capture_file: str) -> None:
-        ports: list[str] = UART.find_sniffer()
+        ports: list[str] = find_sniffer()
         if not ports:
             logger.error("No sniffer dongles found. Is the device plugged in?")
             sys.exit(1)
 
         logger.debug("Using sniffer on port %s", ports[0])
 
-        self._sniffer: Sniffer.Sniffer = Sniffer.Sniffer(
+        self._sniffer = Sniffer(
             portnum=ports[0],
             baudrate=DEFAULT_BAUDRATE,
             capture_file_path=capture_file,
@@ -158,7 +159,7 @@ class SnifferClient:
         json_fh: IO[str] | None,
     ) -> None:
         """Follow an anonymised device using only its IRK (no prior scan)."""
-        placeholder: Device = Devices.Device(address=[], name='""', RSSI=0)
+        placeholder = Device(address=[], name='""', RSSI=0)
 
         self._sniffer.scan()
         self._sniffer.follow(placeholder)
