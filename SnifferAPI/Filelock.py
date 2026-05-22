@@ -1,67 +1,75 @@
+from __future__ import annotations
+
 import logging
 import os
+from pathlib import Path
 from sys import platform
+
+from . import Exceptions
 
 if platform == "linux":
     import psutil
 
-from . import Exceptions
 
-# Lock file management.
-# ref: https://refspecs.linuxfoundation.org/FHS_3.0/fhs/ch05s09.html
-#
-# Stored in /var/lock:
-# The naming convention which must be used is "LCK.." followed by the base name of the device.
-# For example, to lock /dev/ttyS0 the file "LCK..ttyS0" would be created.
-# HDB UUCP lock file format:
-# process identifier (PID) as a ten byte ASCII decimal number, with a trailing newline
+LOCK_DIR = Path("/var/lock")
 
 
-def lockpid(lockfile):
-    if os.path.isfile(lockfile):
-        with open(lockfile) as fd:
-            lockpid = fd.read()
-
+def lockpid(lockfile: Path) -> int:
+    """Return PID stored in lockfile, or 0 if invalid or missing."""
+    if lockfile.is_file():
         try:
-            return int(lockpid)
-        except:
+            content = lockfile.read_text().strip()
+            return int(content)
+        except Exception:
             logging.info("Lockfile is invalid. Overriding it..")
-            os.remove(lockfile)
+            try:
+                lockfile.unlink()
+            except Exception:
+                pass
             return 0
-
     return 0
 
 
-def lock(port):
+def lock(port: str) -> None:
+    """Create a UUCP-style lockfile for a serial port on Linux."""
     if platform != "linux":
         return
 
     tty = os.path.basename(port)
-    lockfile = f"/var/lock/LCK..{tty}"
+    lockfile = LOCK_DIR / f"LCK..{tty}"
 
-    lockedpid = lockpid(lockfile)
-    if lockedpid:
-        if lockedpid == os.getpid():
+    pid = lockpid(lockfile)
+    if pid:
+        if pid == os.getpid():
             return
 
-        if psutil.pid_exists(lockedpid):
+        if psutil.pid_exists(pid):
             raise Exceptions.LockedException(f"Device {port} is locked")
         else:
             logging.info("Lockfile is stale. Overriding it..")
-            os.remove(lockfile)
+            try:
+                lockfile.unlink()
+            except Exception:
+                pass
 
-    fd = open(lockfile, "w")
-    with open(lockfile, "w") as fd:
-        fd.write(f"{os.getpid():10}")
+    # Write our PID as a 10-byte decimal number with newline
+    try:
+        lockfile.write_text(f"{os.getpid():10}\n")
+    except Exception as exc:
+        logging.exception(f"Failed to create lockfile {lockfile}: {exc}")
 
 
-def unlock(port):
+def unlock(port: str) -> None:
+    """Remove lockfile if owned by this process."""
     if platform != "linux":
         return
 
     tty = os.path.basename(port)
-    lockfile = f"/var/lock/LCK..{tty}"
+    lockfile = LOCK_DIR / f"LCK..{tty}"
 
-    lockedpid = lockpid(lockfile)
-    if lockedpid == os.getpid():
-        os.remove(lockfile)
+    pid = lockpid(lockfile)
+    if pid == os.getpid():
+        try:
+            lockfile.unlink()
+        except Exception:
+            logging.exception(f"Failed to remove lockfile {lockfile}")
