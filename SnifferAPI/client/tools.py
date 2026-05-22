@@ -39,14 +39,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, IO
+from typing import IO, Any
 
 from SnifferAPI import Devices
 from SnifferAPI.Devices import Device
-from SnifferAPI.Types import (
-    PACKET_TYPE_ADVERTISING,
-    PACKET_TYPE_DATA,
-)
+from SnifferAPI.Types import PACKET_TYPE_ADVERTISING, PACKET_TYPE_DATA
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +77,11 @@ def format_packet(p: Any, *, decode: bool) -> str:
     pkt_type: Any = getattr(bp, "type", None)
 
     if pkt_type == PACKET_TYPE_ADVERTISING:
-        adv_addr: list[int]|None = getattr(bp, "advAddress", None)
+        adv_addr: list[int] | None = getattr(bp, "advAddress", None)
         if adv_addr:
             dev: Device = Devices.Device(address=adv_addr, name="", RSSI=0)
             extra.append(f"addr={address_to_string(dev)}")
-        name: str|None = getattr(bp, "name", None)
+        name: str | None = getattr(bp, "name", None)
         if name:
             extra.append(f"name={name.strip(chr(34))}")
         extra.append(f"adv_type={getattr(bp, 'advType', '?')}")
@@ -106,7 +103,7 @@ def record_packet_json(p: Any, fh: IO[str]) -> None:
 
     bp: Any = getattr(p, "blePacket", None)
     if bp is not None:
-        adv_addr: list[int]|None = getattr(bp, "advAddress", None)
+        adv_addr: list[int] | None = getattr(bp, "advAddress", None)
         ble_obj: dict[str, Any] = {
             "type": getattr(bp, "type", None),
             "adv_type": getattr(bp, "advType", None),

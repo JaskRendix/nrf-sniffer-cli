@@ -42,12 +42,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from SnifferAPI import Devices
-from SnifferAPI.Devices import Device
-from SnifferAPI.Types import (
-    EVENT_PACKET_ADV_PDU,
-    EVENT_PACKET_DATA_PDU,
-)
 from SnifferAPI.client.tools import address_to_string, normalize_address
+from SnifferAPI.Devices import Device
+from SnifferAPI.Types import EVENT_PACKET_ADV_PDU, EVENT_PACKET_DATA_PDU
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +53,10 @@ logger = logging.getLogger(__name__)
 class FilterSet:
     """Typed filter configuration for packet selection."""
 
-    channel: int|None = None
-    min_rssi: int|None = None
+    channel: int | None = None
+    min_rssi: int | None = None
     pdu_type: str = "all"  # "adv" | "data" | "all"
-    adv_address: str|None = None  # normalized, no colons
+    adv_address: str | None = None  # normalized, no colons
 
     def match(self, p: Any) -> bool:
         """Return True if packet *p* matches all filter conditions."""
@@ -99,7 +96,7 @@ class FilterSet:
     @classmethod
     def from_args(cls, args: Any) -> FilterSet:
         """Construct a FilterSet from argparse arguments."""
-        adv_address: str|None = None
+        adv_address: str | None = None
 
         raw_addr = getattr(args, "addr", None)
         if raw_addr:

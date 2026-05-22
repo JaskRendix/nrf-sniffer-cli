@@ -43,10 +43,10 @@ import sys
 from typing import IO, Any
 
 from SnifferAPI import UART
-from SnifferAPI.Devices import Device
 from SnifferAPI.client.filter import FilterSet
 from SnifferAPI.client.sniffer import SnifferClient
 from SnifferAPI.client.tools import address_to_string, hex_to_bytes
+from SnifferAPI.Devices import Device
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +171,7 @@ def _handle_scan(client: SnifferClient, timeout: float, as_json: bool) -> int:
     return 0
 
 
-def _open_json_file(path: str|None) -> IO[str]|None:
+def _open_json_file(path: str | None) -> IO[str] | None:
     if path is None:
         return None
     return open(path, "a", encoding="utf-8")
@@ -193,7 +193,7 @@ def main() -> int:
     filters: FilterSet = FilterSet.from_args(args)
     live: bool = bool(args.live)
     decode: bool = bool(args.decode)
-    json_fh: IO[str]|None = _open_json_file(args.record_json)
+    json_fh: IO[str] | None = _open_json_file(args.record_json)
 
     try:
         if args.irk:

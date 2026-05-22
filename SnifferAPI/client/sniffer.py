@@ -40,19 +40,19 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from typing import IO
-
-from SnifferAPI import UART, Devices, Sniffer
-from SnifferAPI.Devices import Device
-from SnifferAPI.client.tools import (
-    address_to_string,
-    normalize_address,
-    record_packet_json,
-    format_packet,
-)
 
 # Only imported for typing; avoids runtime dependency
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING
+
+from SnifferAPI import UART, Devices, Sniffer
+from SnifferAPI.client.tools import (
+    address_to_string,
+    format_packet,
+    normalize_address,
+    record_packet_json,
+)
+from SnifferAPI.Devices import Device
+
 if TYPE_CHECKING:
     from SnifferAPI.client.sniffer import FilterSet
 
@@ -95,8 +95,8 @@ class SnifferClient:
         self,
         timeout: float,
         *,
-        address: str |None = None,
-        name: str |None = None,
+        address: str | None = None,
+        name: str | None = None,
     ) -> list[Device]:
         """Scan for BLE devices.
 
@@ -105,7 +105,7 @@ class SnifferClient:
             no filter is provided. Returns an empty list on timeout.
         """
         self._sniffer.scan()
-        target_addr: str |None = normalize_address(address) if address else None
+        target_addr: str | None = normalize_address(address) if address else None
         deadline: float = time.monotonic() + timeout
 
         while time.monotonic() < deadline:
@@ -134,11 +134,11 @@ class SnifferClient:
         self,
         device: Device,
         *,
-        irk: list[int]|None = None,
+        irk: list[int] | None = None,
         filters: FilterSet,
         live: bool,
         decode: bool,
-        json_fh: IO[str] |None,
+        json_fh: IO[str] | None,
     ) -> None:
         """Follow a specific BLE device."""
         self._sniffer.follow(device)
@@ -155,7 +155,7 @@ class SnifferClient:
         filters: FilterSet,
         live: bool,
         decode: bool,
-        json_fh: IO[str] |None,
+        json_fh: IO[str] | None,
     ) -> None:
         """Follow an anonymised device using only its IRK (no prior scan)."""
         placeholder: Device = Devices.Device(address=[], name='""', RSSI=0)
@@ -172,7 +172,7 @@ class SnifferClient:
         filters: FilterSet,
         live: bool,
         decode: bool,
-        json_fh: IO[str] |None,
+        json_fh: IO[str] | None,
     ) -> None:
         """Main packet processing loop."""
         loops: int = 0

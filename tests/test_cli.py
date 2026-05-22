@@ -5,9 +5,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import SnifferAPI.cli as cli_module
-from SnifferAPI.client.filter import FilterSet
-from SnifferAPI.client.tools import address_to_string, normalize_address, hex_to_bytes
 from SnifferAPI.cli import main
+from SnifferAPI.client.filter import FilterSet
+from SnifferAPI.client.tools import address_to_string, hex_to_bytes, normalize_address
+
 
 def run_main(*argv: str) -> int:
     """Invoke main() with the given argv and return its exit code."""
