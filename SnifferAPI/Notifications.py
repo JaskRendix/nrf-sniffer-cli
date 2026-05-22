@@ -106,11 +106,22 @@ class Notifier:
 
             # Call specific listeners
             for cb in self._callbacks.get(notification.key, []):
-                cb(notification)
+                try:
+                    cb(notification)
+                except Exception as e:
+                    # Never let one callback break the dispatcher
+                    import logging
+
+                    logging.exception(f"Notifier callback failed: {e}")
 
             # Call wildcard listeners
             for cb in self._callbacks.get("*", []):
-                cb(notification)
+                try:
+                    cb(notification)
+                except Exception as e:
+                    import logging
+
+                    logging.exception(f"Notifier wildcard callback failed: {e}")
 
     def passOnNotification(self, notification: Notification) -> None:
         """Forward an existing notification."""
