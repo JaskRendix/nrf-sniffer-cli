@@ -35,57 +35,73 @@
 # OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
+from __future__ import annotations
+
 import logging
-import os
+from pathlib import Path
 
 from . import Logger, Pcap
 
-DEFAULT_CAPTURE_FILE_DIR = Logger.DEFAULT_LOG_FILE_DIR
-DEFAULT_CAPTURE_FILE_NAME = "capture.pcap"
+DEFAULT_CAPTURE_FILE_DIR: str = Logger.DEFAULT_LOG_FILE_DIR
+DEFAULT_CAPTURE_FILE_NAME: str = "capture.pcap"
 
 
-def get_capture_file_path(capture_file_path=None):
-    default_path = os.path.join(DEFAULT_CAPTURE_FILE_DIR, DEFAULT_CAPTURE_FILE_NAME)
+def get_capture_file_path(capture_file_path: str | None = None) -> str:
+    """Return a valid .pcap file path, falling back to the default."""
+    default_path = Path(DEFAULT_CAPTURE_FILE_DIR) / DEFAULT_CAPTURE_FILE_NAME
+
     if capture_file_path is None:
-        return default_path
-    if os.path.splitext(capture_file_path)[1] != ".pcap":
-        return default_path
-    return os.path.abspath(capture_file_path)
+        return str(default_path)
+
+    path = Path(capture_file_path)
+    if path.suffix != ".pcap":
+        return str(default_path)
+
+    return str(path.resolve())
 
 
 class CaptureFileHandler:
-    def __init__(self, capture_file_path=None, clear=False):
-        filename = get_capture_file_path(capture_file_path)
-        if not os.path.isdir(os.path.dirname(filename)):
-            os.makedirs(os.path.dirname(filename))
-        self.filename = filename
-        self.backupFilename = self.filename + ".1"
-        if not os.path.isfile(self.filename):
+    """Manage capture file creation, rollover, and packet writing."""
+
+    def __init__(self, capture_file_path: str | None = None, clear: bool = False):
+        filename = Path(get_capture_file_path(capture_file_path))
+        directory = filename.parent
+
+        directory.mkdir(parents=True, exist_ok=True)
+
+        self.filename: Path = filename
+        self.backupFilename: Path = filename.with_suffix(filename.suffix + ".1")
+
+        if not self.filename.exists():
             self.startNewFile()
-        elif os.path.getsize(self.filename) > 20000000:
+        elif self.filename.stat().st_size > 20_000_000:
             self.doRollover()
+
         if clear:
-            # clear file
             self.startNewFile()
 
-    def startNewFile(self):
-        with open(self.filename, "wb") as f:
+    def startNewFile(self) -> None:
+        """Create a new capture file with a global PCAP header."""
+        with self.filename.open("wb") as f:
             f.write(Pcap.get_global_header())
 
-    def doRollover(self):
+    def doRollover(self) -> None:
+        """Rotate the capture file, keeping a single backup."""
         try:
-            os.remove(self.backupFilename)
-        except:
+            if self.backupFilename.exists():
+                self.backupFilename.unlink()
+        except Exception:
             logging.exception("capture file rollover remove backup failed")
+
         try:
-            os.rename(self.filename, self.backupFilename)
+            self.filename.rename(self.backupFilename)
             self.startNewFile()
-        except:
+        except Exception:
             logging.exception("capture file rollover failed")
 
-    def writePacket(self, packet):
-        with open(self.filename, "ab") as f:
-            packet = Pcap.create_packet(
-                bytes([packet.boardId] + packet.getList()), packet.time
-            )
-            f.write(packet)
+    def writePacket(self, packet) -> None:
+        """Append a packet to the capture file."""
+        with self.filename.open("ab") as f:
+            raw = bytes([packet.boardId] + packet.getList())
+            pcap_packet = Pcap.create_packet(raw, packet.time)
+            f.write(pcap_packet)
