@@ -34,13 +34,17 @@
 # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 # OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from __future__ import annotations
+
 import logging
 import time
+from collections.abc import Sequence
+from typing import Any
 
 import serial
 
-from . import UART, Exceptions, Notifications
-from .Types import *
+from . import UART, BlePacket, Exceptions, Notifications
+from .Types import *  # noqa: F401,F403
 
 ADV_ACCESS_ADDRESS = [0xD6, 0xBE, 0x89, 0x8E]
 
@@ -71,58 +75,54 @@ PACKET_COUNTER_CAP = 2**16
 
 
 class PacketReader(Notifications.Notifier):
-    def __init__(self, portnum=None, callbacks=[], baudrate=None):
-        Notifications.Notifier.__init__(self, callbacks)
-        self.portnum = portnum
+    def __init__(
+        self,
+        portnum: str | None = None,
+        callbacks: list[Any] | None = None,
+        baudrate: int | None = None,
+    ) -> None:
+        super().__init__(callbacks or [])
+        self.portnum: str | None = portnum
         try:
             self.uart = UART.Uart(portnum, baudrate)
         except serial.SerialException as e:
-            logging.exception("Error opening UART %s" % str(e))
+            logging.exception("Error opening UART %s", str(e))
             self.uart = UART.Uart()
-        self.packetCounter = 0
-        self.lastReceivedPacketCounter = 0
-        self.lastReceivedPacket = None
-        self.lastReceivedTimestampPacket = None
-        self.supportedProtocolVersion = PROTOVER_V3
+        self.packetCounter: int = 0
+        self.lastReceivedPacketCounter: int = 0
+        self.lastReceivedPacket: Packet | None = None
+        self.lastReceivedTimestampPacket: Packet | None = None
+        self.supportedProtocolVersion: int = PROTOVER_V3
 
-    def setup(self):
+    def setup(self) -> None:
         pass
 
-    def doExit(self):
-        # This method will always join the Uart worker thread
+    def doExit(self) -> None:
         self.uart.close()
-        # Clear method references to avoid uncollectable cyclic references
         self.clearCallbacks()
 
-    # This function takes a byte list, encode it in SLIP protocol and return the encoded byte list
-    def encodeToSLIP(self, byteList):
-        tempSLIPBuffer = []
-        tempSLIPBuffer.append(SLIP_START)
-        for i in byteList:
-            if i == SLIP_START:
-                tempSLIPBuffer.append(SLIP_ESC)
-                tempSLIPBuffer.append(SLIP_ESC_START)
-            elif i == SLIP_END:
-                tempSLIPBuffer.append(SLIP_ESC)
-                tempSLIPBuffer.append(SLIP_ESC_END)
-            elif i == SLIP_ESC:
-                tempSLIPBuffer.append(SLIP_ESC)
-                tempSLIPBuffer.append(SLIP_ESC_ESC)
+    def encodeToSLIP(self, byteList: Sequence[int]) -> list[int]:
+        tempSLIPBuffer: list[int] = [SLIP_START]
+        for b in byteList:
+            if b == SLIP_START:
+                tempSLIPBuffer.extend([SLIP_ESC, SLIP_ESC_START])
+            elif b == SLIP_END:
+                tempSLIPBuffer.extend([SLIP_ESC, SLIP_ESC_END])
+            elif b == SLIP_ESC:
+                tempSLIPBuffer.extend([SLIP_ESC, SLIP_ESC_ESC])
             else:
-                tempSLIPBuffer.append(i)
+                tempSLIPBuffer.append(b)
         tempSLIPBuffer.append(SLIP_END)
         return tempSLIPBuffer
 
-    # This function uses getSerialByte() function to get SLIP encoded bytes from the serial port and return a decoded byte list
-    # Based on https://github.com/mehdix/pyslip/
-    def decodeFromSLIP(self, timeout=None, complete_timeout=None):
-        dataBuffer = []
+    def decodeFromSLIP(
+        self, timeout: float | None = None, complete_timeout: float | None = None
+    ) -> list[int]:
+        dataBuffer: list[int] = []
         startOfPacket = False
         endOfPacket = False
 
-        if complete_timeout is not None:
-            time_start = time.time()
-
+        time_start: float = time.time()
         while not startOfPacket and (
             complete_timeout is None or (time.time() - time_start < complete_timeout)
         ):
@@ -147,53 +147,46 @@ class PacketReader(Notifications.Notifier):
                     dataBuffer.append(SLIP_END)
             else:
                 dataBuffer.append(serialByte)
+
         if not endOfPacket:
             raise Exceptions.UARTPacketError(
-                "Exceeded max timeout of %f seconds." % complete_timeout
+                "Exceeded max timeout of %f seconds." % (complete_timeout or 0.0)
             )
         return dataBuffer
 
-    # This function read byte chuncks from the serial port and return one byte at a time
-    # Based on https://github.com/mehdix/pyslip/
-    def getSerialByte(self, timeout=None):
+    def getSerialByte(self, timeout: float | None = None) -> int:
         serialByte = self.uart.readByte(timeout)
         if serialByte is None:
             raise Exceptions.SnifferTimeout("Packet read timed out.")
         return serialByte
 
-    def handlePacketHistory(self, packet):
-        # Reads and validates packet counter
+    def handlePacketHistory(self, packet: Packet) -> None:
         if (
             self.lastReceivedPacket is not None
             and packet.packetCounter
             != (self.lastReceivedPacket.packetCounter + 1) % PACKET_COUNTER_CAP
             and self.lastReceivedPacket.packetCounter != 0
         ):
-
             logging.info(
-                "gap in packets, between "
-                + str(self.lastReceivedPacket.packetCounter)
-                + " and "
-                + str(packet.packetCounter)
-                + " packet before: "
-                + str(self.lastReceivedPacket.packetList)
-                + " packet after: "
-                + str(packet.packetList)
+                "gap in packets, between %s and %s packet before: %s packet after: %s",
+                self.lastReceivedPacket.packetCounter,
+                packet.packetCounter,
+                self.lastReceivedPacket.packetList,
+                packet.packetList,
             )
 
         self.lastReceivedPacket = packet
-        if packet.id in [EVENT_PACKET_DATA_PDU, EVENT_PACKET_ADV_PDU]:
+        if packet.id in (EVENT_PACKET_DATA_PDU, EVENT_PACKET_ADV_PDU):
             self.lastReceivedTimestampPacket = packet
 
-    def getPacketTime(self, packet):
-        ble_payload_length = self.lastReceivedPacket.payloadLength - BLE_HEADER_LENGTH
+    def getPacketTime(self, packet: Packet) -> int:
+        ble_payload_length = packet.payloadLength - BLE_HEADER_LENGTH
 
         if packet.phy == PHY_1M:
             return 8 * (1 + ble_payload_length)
         elif packet.phy == PHY_2M:
             return 4 * (2 + ble_payload_length)
         elif packet.phy == PHY_CODED:
-            # blePacket is not assigned if not packet is "OK" (CRC error)
             ci = packet.packetList[BLEPACKET_POS + 4]
             fec2_block_len = ble_payload_length - 4 - 1
             fec1_block_us = 80 + 256 + 16 + 24
@@ -201,22 +194,17 @@ class PacketReader(Notifications.Notifier):
                 return fec1_block_us + 64 * fec2_block_len + 24
             elif ci == PHY_CODED_CI_S2:
                 return fec1_block_us + 16 * fec2_block_len + 6
-        # Unknown PHY or Coding Indicator
         return 0
 
-    def convertPacketListProtoVer2(self, packet):
-        # Convert to version 2
-        packet.packetList[PROTOVER_POS] = 2
+    def convertPacketListProtoVer2(self, packet: Packet) -> None:
+        packet.packetList[PROTOVER_POS] = PROTOVER_V2
 
-        # Convert to common packet ID
         if packet.packetList[ID_POS] == EVENT_PACKET_ADV_PDU:
             packet.packetList[ID_POS] = EVENT_PACKET_DATA_PDU
 
         if packet.packetList[ID_POS] != EVENT_PACKET_DATA_PDU:
-            # These types do not have a timestamp
             return
 
-        # Convert time-stamp to End to Start delta
         time_delta = 0
         if (
             self.lastReceivedTimestampPacket is not None
@@ -227,20 +215,20 @@ class PacketReader(Notifications.Notifier):
                 + self.getPacketTime(self.lastReceivedTimestampPacket)
             )
 
-        time_delta = toLittleEndian(time_delta, 4)
-        packet.packetList[TIMESTAMP_POS] = time_delta[0]
-        packet.packetList[TIMESTAMP_POS + 1] = time_delta[1]
-        packet.packetList[TIMESTAMP_POS + 2] = time_delta[2]
-        packet.packetList[TIMESTAMP_POS + 3] = time_delta[3]
+        td = toLittleEndian(time_delta, 4)
+        packet.packetList[TIMESTAMP_POS] = td[0]
+        packet.packetList[TIMESTAMP_POS + 1] = td[1]
+        packet.packetList[TIMESTAMP_POS + 2] = td[2]
+        packet.packetList[TIMESTAMP_POS + 3] = td[3]
 
-    def handlePacketCompatibility(self, packet):
+    def handlePacketCompatibility(self, packet: Packet) -> None:
         if (
             self.supportedProtocolVersion == PROTOVER_V2
             and packet.packetList[PROTOVER_POS] > PROTOVER_V2
         ):
             self.convertPacketListProtoVer2(packet)
 
-    def setSupportedProtocolVersion(self, supportedProtocolVersion):
+    def setSupportedProtocolVersion(self, supportedProtocolVersion: int) -> None:
         if supportedProtocolVersion != PROTOVER_V3:
             logging.info(
                 "Using packet compatibility, converting packets to protocol version %d",
@@ -248,11 +236,10 @@ class PacketReader(Notifications.Notifier):
             )
         self.supportedProtocolVersion = supportedProtocolVersion
 
-    def getPacket(self, timeout=None):
-        packetList = []
+    def getPacket(self, timeout: float | None = None) -> Packet | None:
         try:
             packetList = self.decodeFromSLIP(timeout)
-        except Exceptions.UARTPacketError:  # FIXME: This is never thrown...
+        except Exceptions.UARTPacketError:
             logging.exception("")
             return None
         else:
@@ -262,145 +249,151 @@ class PacketReader(Notifications.Notifier):
                 self.handlePacketHistory(packet)
             return packet
 
-    def sendPacket(self, id, payload):
-        packetList = (
+    def sendPacket(self, id: int, payload: Sequence[int]) -> None:
+        packetList: list[int] = (
             [HEADER_LENGTH]
             + [len(payload)]
             + [PROTOVER_V1]
             + toLittleEndian(self.packetCounter, 2)
             + [id]
-            + payload
+            + list(payload)
         )
         packetList = self.encodeToSLIP(packetList)
         self.packetCounter += 1
         self.uart.writeList(packetList)
 
-    def sendScan(self, findScanRsp=False, findAux=False, scanCoded=False):
-        flags0 = findScanRsp | (findAux << 1) | (scanCoded << 2)
+    def sendScan(
+        self, findScanRsp: bool = False, findAux: bool = False, scanCoded: bool = False
+    ) -> None:
+        flags0 = (
+            (1 if findScanRsp else 0)
+            | ((1 if findAux else 0) << 1)
+            | ((1 if scanCoded else 0) << 2)
+        )
         self.sendPacket(REQ_SCAN_CONT, [flags0])
-        logging.info("Scan flags: %s" % bin(flags0))
+        logging.info("Scan flags: %s", bin(flags0))
 
     def sendFollow(
         self,
-        addr,
-        followOnlyAdvertisements=False,
-        followOnlyLegacy=False,
-        followCoded=False,
-    ):
-        flags0 = followOnlyAdvertisements | (followOnlyLegacy << 1) | (followCoded << 2)
-        logging.info("Follow flags: %s" % bin(flags0))
-        self.sendPacket(REQ_FOLLOW, addr + [flags0])
+        addr: Sequence[int],
+        followOnlyAdvertisements: bool = False,
+        followOnlyLegacy: bool = False,
+        followCoded: bool = False,
+    ) -> None:
+        flags0 = (
+            (1 if followOnlyAdvertisements else 0)
+            | ((1 if followOnlyLegacy else 0) << 1)
+            | ((1 if followCoded else 0) << 2)
+        )
+        logging.info("Follow flags: %s", bin(flags0))
+        self.sendPacket(REQ_FOLLOW, list(addr) + [flags0])
 
-    def sendPingReq(self):
+    def sendPingReq(self) -> None:
         self.sendPacket(PING_REQ, [])
 
-    def getBytes(self, value, size):
-        if len(value) < size:
-            value = [0] * (size - len(value)) + value
+    def getBytes(self, value: Sequence[int], size: int) -> list[int]:
+        v = list(value)
+        if len(v) < size:
+            v = [0] * (size - len(v)) + v
         else:
-            value = value[:size]
+            v = v[:size]
+        return v
 
-        return value
+    def sendTK(self, TK: Sequence[int]) -> None:
+        tk = self.getBytes(TK, 16)
+        self.sendPacket(SET_TEMPORARY_KEY, tk)
+        logging.info(f"Sent TK to sniffer: {tk}")
 
-    def sendTK(self, TK):
-        TK = self.getBytes(TK, 16)
-        self.sendPacket(SET_TEMPORARY_KEY, TK)
-        logging.info("Sent TK to sniffer: " + str(TK))
+    def sendPrivateKey(self, pk: Sequence[int]) -> None:
+        pk_bytes = self.getBytes(pk, 32)
+        self.sendPacket(SET_PRIVATE_KEY, pk_bytes)
+        logging.info(f"Sent private key to sniffer: {pk_bytes}")
 
-    def sendPrivateKey(self, pk):
-        pk = self.getBytes(pk, 32)
-        self.sendPacket(SET_PRIVATE_KEY, pk)
-        logging.info("Sent private key to sniffer: " + str(pk))
+    def sendLegacyLTK(self, ltk: Sequence[int]) -> None:
+        ltk_bytes = self.getBytes(ltk, 16)
+        self.sendPacket(SET_LEGACY_LONG_TERM_KEY, ltk_bytes)
+        logging.info(f"Sent Legacy LTK to sniffer: {ltk_bytes}")
 
-    def sendLegacyLTK(self, ltk):
-        ltk = self.getBytes(ltk, 16)
-        self.sendPacket(SET_LEGACY_LONG_TERM_KEY, ltk)
-        logging.info("Sent Legacy LTK to sniffer: " + str(ltk))
+    def sendSCLTK(self, ltk: Sequence[int]) -> None:
+        ltk_bytes = self.getBytes(ltk, 16)
+        self.sendPacket(SET_SC_LONG_TERM_KEY, ltk_bytes)
+        logging.info(f"Sent SC LTK to sniffer: {ltk_bytes}")
 
-    def sendSCLTK(self, ltk):
-        ltk = self.getBytes(ltk, 16)
-        self.sendPacket(SET_SC_LONG_TERM_KEY, ltk)
-        logging.info("Sent SC LTK to sniffer: " + str(ltk))
+    def sendIRK(self, irk: Sequence[int]) -> None:
+        irk_bytes = self.getBytes(irk, 16)
+        self.sendPacket(SET_IDENTITY_RESOLVING_KEY, irk_bytes)
+        logging.info(f"Sent IRK to sniffer: {irk_bytes}")
 
-    def sendIRK(self, irk):
-        irk = self.getBytes(irk, 16)
-        self.sendPacket(SET_IDENTITY_RESOLVING_KEY, irk)
-        logging.info("Sent IRK to sniffer: " + str(irk))
-
-    def sendSwitchBaudRate(self, newBaudRate):
+    def sendSwitchBaudRate(self, newBaudRate: int) -> None:
         self.sendPacket(SWITCH_BAUD_RATE_REQ, toLittleEndian(newBaudRate, 4))
 
-    def switchBaudRate(self, newBaudRate):
+    def switchBaudRate(self, newBaudRate: int) -> None:
         self.uart.switchBaudRate(newBaudRate)
 
-    def sendHopSequence(self, hopSequence):
+    def sendHopSequence(self, hopSequence: Sequence[int]) -> None:
         for chan in hopSequence:
             if chan not in VALID_ADV_CHANS:
-                raise Exceptions.InvalidAdvChannel(
-                    "%s is not an adv channel" % str(chan)
-                )
-        payload = [len(hopSequence)] + hopSequence + [37] * (3 - len(hopSequence))
+                raise Exceptions.InvalidAdvChannel(f"{chan} is not an adv channel")
+        payload = [len(hopSequence)] + list(hopSequence) + [37] * (3 - len(hopSequence))
         self.sendPacket(SET_ADV_CHANNEL_HOP_SEQ, payload)
-        self.notify("NEW_ADV_HOP_SEQ", {"hopSequence": hopSequence})
+        self.notify("NEW_ADV_HOP_SEQ", {"hopSequence": list(hopSequence)})
 
-    def sendVersionReq(self):
+    def sendVersionReq(self) -> None:
         self.sendPacket(REQ_VERSION, [])
 
-    def sendTimestampReq(self):
+    def sendTimestampReq(self) -> None:
         self.sendPacket(REQ_TIMESTAMP, [])
 
-    def sendGoIdle(self):
+    def sendGoIdle(self) -> None:
         self.sendPacket(GO_IDLE, [])
 
 
 class Packet:
-    def __init__(self, packetList):
+    def __init__(self, packetList: list[int]) -> None:
         try:
             if not packetList:
                 raise Exceptions.InvalidPacketException(
-                    "packet list not valid: %s" % str(packetList)
+                    f"packet list not valid: {str(packetList)}"
                 )
 
-            self.protover = packetList[PROTOVER_POS]
+            self.protover: int = packetList[PROTOVER_POS]
 
             if self.protover > PROTOVER_V3:
-                logging.exception(
-                    "Unsupported protocol version %s" % str(self.protover)
-                )
-                raise RuntimeError(
-                    "Unsupported protocol version %s" % str(self.protover)
-                )
+                logging.exception(f"Unsupported protocol version {str(self.protover)}")
+                raise RuntimeError(f"Unsupported protocol version {str(self.protover)}")
 
-            self.packetCounter = parseLittleEndian(
+            self.packetCounter: int = parseLittleEndian(
                 packetList[PACKETCOUNTER_POS : PACKETCOUNTER_POS + 2]
             )
-            self.id = packetList[ID_POS]
+            self.id: int = packetList[ID_POS]
 
             if int(self.protover) == PROTOVER_V1:
-                self.payloadLength = packetList[PAYLOAD_LEN_POS_V1]
+                self.payloadLength: int = packetList[PAYLOAD_LEN_POS_V1]
             else:
                 self.payloadLength = parseLittleEndian(
                     packetList[PAYLOAD_LEN_POS : PAYLOAD_LEN_POS + 2]
                 )
 
-            self.packetList = packetList
+            self.packetList: list[int] = packetList
+            self.valid: bool = False
+            self.OK: bool = False
             self.readPayload(packetList)
 
         except Exceptions.InvalidPacketException as e:
-            logging.error("Invalid packet: %s" % str(e))
+            logging.error("Invalid packet: %s", str(e))
             self.OK = False
             self.valid = False
         except Exception as e:
-            logging.exception("packet creation error %s" % str(e))
-            logging.info("packetList: " + str(packetList))
+            logging.exception("packet creation error %s", str(e))
+            logging.info("packetList: %s", packetList)
             self.OK = False
             self.valid = False
 
-    def __repr__(self):
-        return "UART packet, type: " + str(self.id) + ", PC: " + str(self.packetCounter)
+    def __repr__(self) -> str:
+        return f"UART packet, type: {self.id}, PC: {self.packetCounter}"
 
-    def readPayload(self, packetList):
-        self.blePacket = None
+    def readPayload(self, packetList: list[int]) -> None:
+        self.blePacket: BlePacket.BlePacket | None = None
         self.OK = False
 
         if not self.validatePacketList(packetList):
@@ -410,9 +403,11 @@ class Packet:
         else:
             self.valid = True
 
-        self.payload = packetList[PAYLOAD_POS : PAYLOAD_POS + self.payloadLength]
+        self.payload: list[int] = packetList[
+            PAYLOAD_POS : PAYLOAD_POS + self.payloadLength
+        ]
 
-        if self.id == EVENT_PACKET_ADV_PDU or self.id == EVENT_PACKET_DATA_PDU:
+        if self.id in (EVENT_PACKET_ADV_PDU, EVENT_PACKET_DATA_PDU):
             try:
                 self.bleHeaderLength = packetList[BLE_HEADER_LEN_POS]
                 if self.bleHeaderLength == BLE_HEADER_LENGTH:
@@ -429,22 +424,19 @@ class Packet:
                         packetList[TIMESTAMP_POS : TIMESTAMP_POS + 4]
                     )
 
-                    # The hardware adds a padding byte which isn't sent on air.
-                    # We remove it, and update the payload length in the packet list.
                     if self.phy == PHY_CODED:
                         self.packetList.pop(BLEPACKET_POS + 6 + 1)
                     else:
                         self.packetList.pop(BLEPACKET_POS + 6)
                     self.payloadLength -= 1
                     if self.protover >= PROTOVER_V2:
-                        # Write updated payload length back to the packet list.
                         payloadLength = toLittleEndian(self.payloadLength, 2)
                         packetList[PAYLOAD_LEN_POS] = payloadLength[0]
                         packetList[PAYLOAD_LEN_POS + 1] = payloadLength[1]
-                    else:  # PROTOVER_V1
+                    else:
                         packetList[PAYLOAD_LEN_POS_V1] = self.payloadLength
                 else:
-                    logging.info("Invalid BLE Header Length " + str(packetList))
+                    logging.info("Invalid BLE Header Length %s", packetList)
                     self.valid = False
 
                 if self.OK:
@@ -463,14 +455,13 @@ class Packet:
                                 else PACKET_TYPE_DATA
                             )
 
-                        self.blePacket = BlePacket(
+                        self.blePacket = BlePacket.BlePacket(
                             packet_type, packetList[BLEPACKET_POS:], self.phy
                         )
                     except Exception as e:
-                        logging.exception("blePacket error %s" % str(e))
+                        logging.exception("blePacket error %s", str(e))
             except Exception as e:
-                # malformed packet
-                logging.exception("packet error %s" % str(e))
+                logging.exception("packet error %s", str(e))
                 self.OK = False
         elif self.id == PING_RESP:
             if self.protover < PROTOVER_V3:
@@ -478,174 +469,44 @@ class Packet:
                     packetList[PAYLOAD_POS : PAYLOAD_POS + 2]
                 )
         elif self.id == RESP_VERSION:
-            self.version = "".join([chr(i) for i in packetList[PAYLOAD_POS:]])
+            self.version = "".join(chr(i) for i in packetList[PAYLOAD_POS:])
         elif self.id == RESP_TIMESTAMP:
             self.timestamp = parseLittleEndian(
                 packetList[PAYLOAD_POS : PAYLOAD_POS + 4]
             )
-        elif self.id == SWITCH_BAUD_RATE_RESP or self.id == SWITCH_BAUD_RATE_REQ:
+        elif self.id in (SWITCH_BAUD_RATE_RESP, SWITCH_BAUD_RATE_REQ):
             self.baudRate = parseLittleEndian(packetList[PAYLOAD_POS : PAYLOAD_POS + 4])
         else:
             logging.info("Unknown packet ID")
 
-    def readFlags(self):
-        self.crcOK = not not (self.flags & 1)
-        self.direction = not not (self.flags & 2)
-        self.encrypted = not not (self.flags & 4)
-        self.micOK = not not (self.flags & 8)
+    def readFlags(self) -> None:
+        self.crcOK = bool(self.flags & 1)
+        self.direction = bool(self.flags & 2)
+        self.encrypted = bool(self.flags & 4)
+        self.micOK = bool(self.flags & 8)
         self.phy = (self.flags >> 4) & 7
         self.OK = self.crcOK and (self.micOK or not self.encrypted)
 
-    def getList(self):
+    def getList(self) -> list[int]:
         return self.packetList
 
-    def validatePacketList(self, packetList):
+    def validatePacketList(self, packetList: list[int]) -> bool:
         try:
-            if (self.payloadLength + HEADER_LENGTH) == len(packetList):
-                return True
-            else:
-                return False
-        except:
-            logging.exception("Invalid packet: %s" % str(packetList))
+            return (self.payloadLength + HEADER_LENGTH) == len(packetList)
+        except Exception:
+            logging.exception("Invalid packet: %s", packetList)
             return False
 
 
-class BlePacket:
-    def __init__(self, type, packetList, phy):
-        self.type = type
-
-        offset = 0
-        offset = self.extractAccessAddress(packetList, offset)
-        offset = self.extractFormat(packetList, phy, offset)
-
-        if self.type == PACKET_TYPE_ADVERTISING:
-            offset = self.extractAdvHeader(packetList, offset)
-        else:
-            offset = self.extractConnHeader(packetList, offset)
-
-        offset = self.extractLength(packetList, offset)
-        self.payload = packetList[offset:]
-
-        if self.type == PACKET_TYPE_ADVERTISING:
-            offset = self.extractAddresses(packetList, offset)
-            self.extractName(packetList, offset)
-
-    def __repr__(self):
-        return "BLE packet, AAddr: " + str(self.accessAddress)
-
-    def extractAccessAddress(self, packetList, offset):
-        self.accessAddress = packetList[offset : offset + 4]
-        return offset + 4
-
-    def extractFormat(self, packetList, phy, offset):
-        self.coded = phy == PHY_CODED
-        if self.coded:
-            self.codingIndicator = packetList[offset] & 3
-            return offset + 1
-
-        return offset
-
-    def extractAdvHeader(self, packetList, offset):
-        self.advType = packetList[offset] & 15
-        self.txAddrType = (packetList[offset] >> 6) & 1
-        if self.advType in [1, 3, 5]:
-            self.rxAddrType = (packetList[offset] << 7) & 1
-        return offset + 1
-
-    def extractConnHeader(self, packetList, offset):
-        self.llid = packetList[offset] & 3
-        self.sn = (packetList[offset] >> 2) & 1
-        self.nesn = (packetList[offset] >> 3) & 1
-        self.md = (packetList[offset] >> 4) & 1
-        return offset + 1
-
-    def extractAddresses(self, packetList, offset):
-        addr = None
-        scanAddr = None
-
-        if self.advType in [0, 1, 2, 4, 6]:
-            addr = packetList[offset : offset + 6]
-            addr.reverse()
-            addr += [self.txAddrType]
-            offset += 6
-
-        if self.advType in [3, 5]:
-            scanAddr = packetList[offset : offset + 6]
-            scanAddr.reverse()
-            scanAddr += [self.txAddrType]
-            offset += 6
-            addr = packetList[offset : offset + 6]
-            addr.reverse()
-            addr += [self.rxAddrType]
-            offset += 6
-
-        if self.advType == 1:
-            scanAddr = packetList[offset : offset + 6]
-            scanAddr.reverse()
-            scanAddr += [self.rxAddrType]
-            offset += 6
-
-        if self.advType == 7:
-            ext_header_len = packetList[offset] & 0x3F
-            offset += 1
-
-            ext_header_offset = offset
-            flags = packetList[offset]
-            ext_header_offset += 1
-
-            if flags & 0x01:
-                addr = packetList[ext_header_offset : ext_header_offset + 6]
-                addr.reverse()
-                addr += [self.txAddrType]
-                ext_header_offset += 6
-
-            if flags & 0x02:
-                scanAddr = packetList[ext_header_offset : ext_header_offset + 6]
-                scanAddr.reverse()
-                scanAddr += [self.rxAddrType]
-                ext_header_offset += 6
-
-            offset += ext_header_len
-
-        self.advAddress = addr
-        self.scanAddress = scanAddr
-        return offset
-
-    def extractName(self, packetList, offset):
-        name = ""
-        if self.advType in [0, 2, 4, 6, 7]:
-            i = offset
-            while i < len(packetList):
-                length = packetList[i]
-                if (i + length + 1) > len(packetList) or length == 0:
-                    break
-                type = packetList[i + 1]
-                if type == 8 or type == 9:
-                    nameList = packetList[i + 2 : i + length + 1]
-                    name = ""
-                    for j in nameList:
-                        name += chr(j)
-                i += length + 1
-            name = '"' + name + '"'
-        elif self.advType == 1:
-            name = "[ADV_DIRECT_IND]"
-
-        self.name = name
-
-    def extractLength(self, packetList, offset):
-        self.length = packetList[offset]
-        return offset + 1
-
-
-def parseLittleEndian(list):
+def parseLittleEndian(values: Sequence[int]) -> int:
     total = 0
-    for i in range(len(list)):
-        total += list[i] << (8 * i)
+    for i, b in enumerate(values):
+        total += b << (8 * i)
     return total
 
 
-def toLittleEndian(value, size):
-    list = [0] * size
+def toLittleEndian(value: int, size: int) -> list[int]:
+    out = [0] * size
     for i in range(size):
-        list[i] = (value >> (i * 8)) % 256
-    return list
+        out[i] = (value >> (i * 8)) & 0xFF
+    return
