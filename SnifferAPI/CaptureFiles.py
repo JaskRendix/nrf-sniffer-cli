@@ -37,7 +37,6 @@
 
 import logging
 import os
-import time
 
 from . import Logger, Pcap
 
