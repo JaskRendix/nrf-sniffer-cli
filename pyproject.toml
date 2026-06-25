@@ -44,3 +44,6 @@ nrf-sniffer-cli = "SnifferAPI.cli:main"
 
 [tool.setuptools_scm]
 write_to = "SnifferAPI/_version.py"
+
+[tool.pytest.ini_options]
+addopts = "--cov=SnifferAPI --cov=tools --cov-report=term-missing"
